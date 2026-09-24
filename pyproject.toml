@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localrouterllm"
+version = "1.0.0"
+authors = [
+  { name="Erick (wTHE-HUNTERw)", email="contact@example.com" },
+]
+description = "Smart On-Demand Model Router & VRAM Manager for Llama.cpp and Local AI Agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Environment :: Win32 (MS Windows)",
+]
+dependencies = [
+    "pystray>=0.19.5",
+    "pillow>=10.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/wTHE-HUNTERw/LocalRouterLLM"
+"Bug Tracker" = "https://github.com/wTHE-HUNTERw/LocalRouterLLM/issues"
