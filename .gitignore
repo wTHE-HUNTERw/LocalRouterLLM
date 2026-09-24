@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / C++ binaries and models
+*.gguf
+*.bin
+*.pt
+*.safetensors
+*.onnx
+models/
+gguf/
+bin/
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Configuration (keep config.example.json)
+config.json
+
+# Logs & temp files
+*.log
+*.tmp
+.system_generated/
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
