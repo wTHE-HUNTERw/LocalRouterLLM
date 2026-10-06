@@ -1,0 +1,36 @@
+name: Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create release zip archive
+        run: |
+          powershell -Command "Compress-Archive -Path router.py, hud.py, config.example.json, install.bat, install.ps1, start.bat, stop.bat, requirements.txt, README.md, LICENSE -DestinationPath LocalRouterLLM-${{ github.ref_name }}-win-x64.zip -Force"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LocalRouterLLM ${{ github.ref_name }}
+          files: |
+            LocalRouterLLM-${{ github.ref_name }}-win-x64.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true

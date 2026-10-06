@@ -40,4 +40,4 @@ jobs:
 
     - name: Test router module import & compilation
       run: |
-        python -m py_compile router.py
+        python -m py_compile router.py hud.py
