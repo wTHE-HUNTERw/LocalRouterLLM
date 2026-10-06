@@ -58,6 +58,8 @@ flowchart LR
 
 - 🔄 **On-Demand Dynamic Model Switching:** Select any model in OpenCode or Continue; LocalRouterLLM swaps it into VRAM automatically in ~2 seconds.
 - 🛡️ **Zero VRAM Leakage:** Only **one** model lives in GPU memory at a time. The previous model is cleanly killed, returning 100% of VRAM to Windows.
+- 📊 **Sleek Floating Loading HUD & Radar Tray Animation:** When a model is selected, a floating glassmorphic HUD window displays real-time tensor loading progress, model badge, elapsed time, and dynamic status without stealing focus. The tray icon shows a rotating neon cyan radar during loading.
+- 🥷 **Silent Background Execution:** Completely hides black console/terminal popup windows (`CREATE_NO_WINDOW`), running silently in the background.
 - ⏳ **Smart 40-Minute Idle Timeout:** If you step away from your computer, LocalRouterLLM unloads the model automatically, letting your laptop stay cool and silent.
 - 🦙 **Interactive System Tray App (Wallpaper Engine Style):**
   - 🟠 **Amber Dot:** Standby (0% GPU VRAM used, listening for requests).
@@ -200,9 +202,11 @@ for chunk in response:
 
 ### Beneficios Principales:
 1. **Relevo Automático de VRAM:** Nunca más ejecutes archivos `.bat` manualmente. Cambias de modelo en OpenCode y el router descarga el anterior y monta el nuevo en ~2 segundos.
-2. **0% VRAM en Reposo:** Si dejas de trabajar durante 40 minutos, el router libera automáticamente la memoria de la tarjeta gráfica para que tu laptop funcione fresca y silenciosa.
-3. **Icono en la Bandeja del Sistema:** Control total junto al reloj de Windows (con botón para liberar VRAM en 1 clic).
-4. **Optimizado para Procesadores Intel Híbridos:** Configurado con `--threads 6 --threads-batch 8` para exprimir al máximo los núcleos P-Core y evitar micro-congelamientos.
+2. **HUD Flotante & Animación en Bandeja:** Barra de carga futurista sobre la barra de tareas que muestra el porcentaje en tiempo real, tensores y estado del modelo sin interrumpir tu flujo de trabajo.
+3. **Ejecución 100% Silenciosa:** Oculta por completo las terminales emergentes de `llama-server.exe` en segundo plano.
+4. **0% VRAM en Reposo:** Si dejas de trabajar durante 40 minutos, el router libera automáticamente la memoria de la tarjeta gráfica para que tu laptop funcione fresca y silenciosa.
+5. **Icono en la Bandeja del Sistema:** Control total junto al reloj de Windows (con botón para liberar VRAM en 1 clic).
+6. **Optimizado para Procesadores Intel Híbridos:** Configurado con `--threads 6 --threads-batch 8` para exprimir al máximo los núcleos P-Core y evitar micro-congelamientos.
 
 ---
 

@@ -18,12 +18,28 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
 
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 try:
     import pystray
     from PIL import Image, ImageDraw
     HAS_TRAY = True
 except ImportError:
     HAS_TRAY = False
+
+try:
+    import tkinter as tk
+    HAS_TK = True
+except ImportError:
+    HAS_TK = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -59,22 +75,97 @@ def resolve_model_path(rel_or_abs):
         return rel_or_abs
     return os.path.normpath(os.path.join(MODELS_DIR, rel_or_abs))
 
-def generate_tray_image(is_active=False):
+def get_model_est_seconds(cfg, model_key):
+    name = cfg.get("name", model_key)
+    if "27B" in name or "27b" in model_key:
+        return 12.0
+    elif "8B" in name or "9B" in name or "8b" in model_key or "9b" in model_key:
+        return 6.5
+    else:
+        return 4.0
+
+class LoadingHUD:
+    """Controlador que invoca el HUD en un subproceso aislado para evitar conflictos de hilos con Tcl/Tk."""
+    def __init__(self, model_name="Modelo IA", est_seconds=4.0):
+        self.proc = None
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        hud_script = os.path.join(base_dir, "hud.py")
+        if not os.path.exists(hud_script):
+            hud_script = "c:\\Program Files\\LlamaCPP\\hud.py"
+
+        py_bin = sys.executable
+        if py_bin.endswith("python.exe"):
+            pyw_candidate = py_bin[:-10] + "pythonw.exe"
+            if os.path.exists(pyw_candidate):
+                py_bin = pyw_candidate
+
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            self.proc = subprocess.Popen(
+                [py_bin, hud_script, model_name, str(est_seconds)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags
+            )
+        except Exception as e:
+            print(f"[Router] No se pudo lanzar HUD: {e}")
+            self.proc = None
+
+    def set_status(self, text):
+        if self.proc and self.proc.stdin:
+            try:
+                msg = f"STATUS:{text}\n".encode("utf-8")
+                self.proc.stdin.write(msg)
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+
+    def finish(self, success=True):
+        if self.proc and self.proc.stdin:
+            try:
+                cmd = b"READY\n" if success else b"FAILED\n"
+                self.proc.stdin.write(cmd)
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+
+def generate_tray_image(state="idle", is_active=None, loading_angle=0):
+    if is_active is not None:
+        state = "active" if is_active else "idle"
     size = (64, 64)
     img = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    bg = (18, 22, 32, 255) if is_active else (20, 22, 26, 240)
-    border = (0, 225, 255, 255) if is_active else (90, 100, 120, 220)
-    draw.ellipse([3, 3, 61, 61], fill=bg, outline=border, width=3)
-
-    symbol_color = (0, 245, 255, 255) if is_active else (150, 165, 185, 255)
-    draw.line([(24, 46), (36, 18)], fill=symbol_color, width=4)
-    draw.line([(31, 29), (43, 46)], fill=symbol_color, width=4)
-
-    dot_fill = (0, 255, 136, 255) if is_active else (255, 180, 20, 255)
-    draw.ellipse([42, 8, 56, 22], fill=dot_fill, outline=(255, 255, 255, 220), width=2)
-    return img
+    if state == "loading":
+        bg = (15, 20, 30, 250)
+        border = (30, 45, 65, 200)
+        draw.ellipse([3, 3, 61, 61], fill=bg, outline=border, width=2)
+        # Arco giratorio cyan neon estilo radar
+        draw.arc([3, 3, 61, 61], start=loading_angle, end=loading_angle + 110, fill=(0, 245, 255, 255), width=4)
+        symbol_color = (0, 245, 255, 255)
+        draw.line([(24, 46), (36, 18)], fill=symbol_color, width=4)
+        draw.line([(31, 29), (43, 46)], fill=symbol_color, width=4)
+        draw.ellipse([42, 8, 56, 22], fill=(0, 220, 255, 255), outline=(255, 255, 255, 220), width=2)
+        return img
+    elif state == "active":
+        bg = (18, 22, 32, 255)
+        border = (0, 225, 255, 255)
+        draw.ellipse([3, 3, 61, 61], fill=bg, outline=border, width=3)
+        symbol_color = (0, 245, 255, 255)
+        draw.line([(24, 46), (36, 18)], fill=symbol_color, width=4)
+        draw.line([(31, 29), (43, 46)], fill=symbol_color, width=4)
+        draw.ellipse([42, 8, 56, 22], fill=(0, 255, 136, 255), outline=(255, 255, 255, 220), width=2)
+        return img
+    else:  # idle
+        bg = (20, 22, 26, 240)
+        border = (90, 100, 120, 220)
+        draw.ellipse([3, 3, 61, 61], fill=bg, outline=border, width=3)
+        symbol_color = (150, 165, 185, 255)
+        draw.line([(24, 46), (36, 18)], fill=symbol_color, width=4)
+        draw.line([(31, 29), (43, 46)], fill=symbol_color, width=4)
+        draw.ellipse([42, 8, 56, 22], fill=(255, 180, 20, 255), outline=(255, 255, 255, 220), width=2)
+        return img
 
 class ModelManager:
     def __init__(self):
@@ -84,6 +175,9 @@ class ModelManager:
         self.last_activity = time.time()
         self.tray_icon = None
         self.http_server = None
+        self.is_loading = False
+        self.loading_angle = 0
+        self.current_hud = None
 
     def set_tray_icon(self, icon):
         self.tray_icon = icon
@@ -93,8 +187,9 @@ class ModelManager:
         if not self.tray_icon or not HAS_TRAY:
             return
         is_active = (self.current_model_key is not None and self.current_process is not None)
+        state = "active" if is_active else "idle"
         try:
-            self.tray_icon.icon = generate_tray_image(is_active)
+            self.tray_icon.icon = generate_tray_image(state=state)
             if is_active:
                 name = MODELS_CONFIG.get(self.current_model_key, {}).get("name", self.current_model_key)
                 self.tray_icon.title = f"LocalRouterLLM: Activo [{name}]"
@@ -102,6 +197,36 @@ class ModelManager:
                 self.tray_icon.title = "LocalRouterLLM: En espera (VRAM libre)"
         except Exception:
             pass
+
+    def start_loading(self, model_key, model_name, est_seconds):
+        self.is_loading = True
+        self.loading_angle = 0
+        try:
+            self.current_hud = LoadingHUD(model_name=model_name, est_seconds=est_seconds)
+        except Exception:
+            self.current_hud = None
+
+        if HAS_TRAY and self.tray_icon:
+            def tray_anim():
+                while self.is_loading:
+                    self.loading_angle = (self.loading_angle + 25) % 360
+                    try:
+                        self.tray_icon.icon = generate_tray_image(state="loading", loading_angle=self.loading_angle)
+                        self.tray_icon.title = f"LocalRouterLLM: Cargando [{model_name}]..."
+                    except Exception:
+                        pass
+                    time.sleep(0.08)
+            threading.Thread(target=tray_anim, daemon=True).start()
+
+    def finish_loading(self, success=True, model_name=""):
+        self.is_loading = False
+        if self.current_hud:
+            try:
+                self.current_hud.finish(success=success)
+            except Exception:
+                pass
+            self.current_hud = None
+        self.update_tray_status()
 
     def get_active_model(self):
         with self.lock:
@@ -121,13 +246,16 @@ class ModelManager:
                 print(f"[Router] Error al terminar proceso: {e}")
             self.current_process = None
             self.current_model_key = None
-            time.sleep(1.0)
+            time.sleep(0.8)
             print("[Router] VRAM liberada correctamente.")
             self.update_tray_status()
 
     def ensure_model(self, model_key):
         with self.lock:
             self.last_activity = time.time()
+
+            if model_key and "/" in model_key:
+                model_key = model_key.split("/")[-1]
 
             if model_key == "llama-server-active" or not model_key:
                 if self.current_model_key and self.current_process and self.current_process.poll() is None:
@@ -158,8 +286,12 @@ class ModelManager:
                 print(f"[Router ERROR] No se encuentra el archivo del modelo en: {model_path}")
                 return False
 
+            model_display_name = cfg.get("name", model_key)
+            est_seconds = get_model_est_seconds(cfg, model_key)
+            self.start_loading(model_key, model_display_name, est_seconds)
+
             print("=======================================================")
-            print(f"[Router] Cargando modelo: {cfg.get('name', model_key)}")
+            print(f"[Router] Cargando modelo: {model_display_name}")
             print(f"[Router] Ruta GGUF: {model_path}")
             print("=======================================================")
 
@@ -210,14 +342,43 @@ class ModelManager:
                     "--cache-type-v-draft", cfg.get("cache_type_v_draft", "q8_0")
                 ])
 
+            # Ocultar completamente la ventana de terminal en Windows
+            startupinfo = None
+            creationflags = 0
+            if sys.platform == "win32":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                creationflags = subprocess.CREATE_NO_WINDOW
+
             self.current_process = subprocess.Popen(
                 cmd,
                 cwd=BIN_DIR,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                creationflags=creationflags
             )
             self.current_model_key = model_key
-            self.update_tray_status()
+
+            # Hilo para leer stderr de llama-server y actualizar el estado visual del HUD
+            def monitor_stderr(proc, hud_ref):
+                try:
+                    for line in iter(proc.stderr.readline, b''):
+                        if not line:
+                            break
+                        line_str = line.decode('utf-8', errors='ignore')
+                        if hud_ref:
+                            if 'loading model tensors' in line_str:
+                                hud_ref.set_status("Cargando tensores del modelo a GPU...")
+                            elif 'offloaded' in line_str and 'layers' in line_str:
+                                hud_ref.set_status("Capas transferidas a VRAM...")
+                            elif 'context_init' in line_str or 'llama_context_init' in line_str:
+                                hud_ref.set_status("Optimizando buffer de contexto KV...")
+                except Exception:
+                    pass
+
+            threading.Thread(target=monitor_stderr, args=(self.current_process, self.current_hud), daemon=True).start()
 
             start_time = time.time()
             ready = False
@@ -226,7 +387,7 @@ class ModelManager:
                     print(f"[Router ERROR] llama-server terminó inesperadamente (código {self.current_process.poll()}).")
                     self.current_process = None
                     self.current_model_key = None
-                    self.update_tray_status()
+                    self.finish_loading(success=False, model_name=model_display_name)
                     return False
                 try:
                     req = urllib.request.Request(f"http://127.0.0.1:{LLAMA_PORT}/health")
@@ -235,15 +396,16 @@ class ModelManager:
                             ready = True
                             break
                 except Exception:
-                    time.sleep(0.3)
+                    time.sleep(0.2)
 
             elapsed = round(time.time() - start_time, 2)
             if ready:
                 print(f"[Router] Modelo listo y activo en {elapsed}s.")
-                self.update_tray_status()
+                self.finish_loading(success=True, model_name=model_display_name)
                 return True
             else:
                 print("[Router ERROR] Tiempo de espera agotado esperando a llama-server.")
+                self.finish_loading(success=False, model_name=model_display_name)
                 self.stop_current_model()
                 return False
 
@@ -321,6 +483,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        if requested_model and "/" in requested_model:
+            requested_model = requested_model.split("/")[-1]
+
         if not requested_model:
             requested_model = manager.get_active_model() or next(iter(MODELS_CONFIG.keys()))
 
@@ -384,6 +549,7 @@ def action_open_opencode(icon, item):
 
 def action_quit(icon, item):
     print("\n[Router] Cerrando router y liberando memoria...")
+    manager.finish_loading(success=False)
     manager.stop_current_model()
     if icon:
         icon.stop()
@@ -417,7 +583,7 @@ def run_server():
 
     tray_icon = None
     if HAS_TRAY:
-        initial_img = generate_tray_image(is_active=False)
+        initial_img = generate_tray_image(state="idle")
         tray_icon = pystray.Icon(
             "LocalRouterLLM",
             initial_img,
@@ -441,6 +607,7 @@ def run_server():
         pass
     finally:
         print("\n[Router] Cerrando servidor y liberando memoria...")
+        manager.finish_loading(success=False)
         manager.stop_current_model()
         if tray_icon:
             tray_icon.stop()
