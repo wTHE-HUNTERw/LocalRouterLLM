@@ -344,8 +344,12 @@ class ModelManager:
             print(f"[Router] Ruta GGUF: {model_path}")
             print("=======================================================")
 
+            server_exe = resolve_bin_path(cfg.get("executable")) if cfg.get("executable") else BIN_PATH
+            if not os.path.exists(server_exe):
+                server_exe = BIN_PATH
+
             cmd = [
-                BIN_PATH,
+                server_exe,
                 "--model", model_path,
                 "--port", str(LLAMA_PORT),
                 "--n-gpu-layers", str(cfg.get("ngl", "all")),
