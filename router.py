@@ -63,9 +63,14 @@ ROUTER_PORT = int(SERVER_CFG.get("port", 8080))
 LLAMA_PORT = int(SERVER_CFG.get("llama_port", 8081))
 IDLE_TIMEOUT_SECONDS = int(SERVER_CFG.get("idle_timeout_minutes", 40)) * 60
 
-# Resolver rutas relativas
+# Resolver rutas relativas con respaldo automático al directorio del sistema
 BIN_PATH = os.path.abspath(os.path.join(BASE_DIR, LLAMA_CFG.get("executable", "llama-server.exe")))
+if not os.path.exists(BIN_PATH):
+    fallback_bin = r"c:\Program Files\LlamaCPP\bin\llama-b11065-bin-win-cuda-13.4-x64\llama-server.exe"
+    if os.path.exists(fallback_bin):
+        BIN_PATH = fallback_bin
 BIN_DIR = os.path.dirname(BIN_PATH)
+
 MODELS_DIR = os.path.abspath(os.path.join(BASE_DIR, LLAMA_CFG.get("models_dir", "../gguf")))
 
 def resolve_model_path(rel_or_abs):
@@ -73,7 +78,13 @@ def resolve_model_path(rel_or_abs):
         return None
     if os.path.isabs(rel_or_abs):
         return rel_or_abs
-    return os.path.normpath(os.path.join(MODELS_DIR, rel_or_abs))
+    primary = os.path.normpath(os.path.join(MODELS_DIR, rel_or_abs))
+    if os.path.exists(primary):
+        return primary
+    fallback = os.path.normpath(os.path.join(r"c:\Program Files\LlamaCPP\gguf", rel_or_abs))
+    if os.path.exists(fallback):
+        return fallback
+    return primary
 
 def get_model_est_seconds(cfg, model_key):
     # Calcular tamaño real en disco para una estimación precisa
