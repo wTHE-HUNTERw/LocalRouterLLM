@@ -225,7 +225,7 @@
       "alias": "Bonsai-27B"
     },
     "Qwen2.5-7B-Instruct": {
-      "name": "Qwen 2.5 7B + 0.5B Speculative (24K)",
+      "name": "Qwen 2.5 7B + 0.5B (Especulativo / MTP Draft, 24K)",
       "model": "Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q3_K_M.gguf",
       "model_draft": "Qwen2.5-7B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
       "ngl": "all",
@@ -246,30 +246,6 @@
       "min_p": 0.05,
       "repeat_penalty": 1.05,
       "alias": "Qwen2.5-7B-Instruct"
-    },
-    "Qwen3.8-27B-Cyber": {
-      "name": "Qwen 3.8 27B Cyber Uncensored (Falta GGUF principal)",
-      "model": "Qwen3.8-27B-Uncensored-Cyber-GGUF/Qwen3.8-27B-Uncensored-Cyber.gguf",
-      "model_draft": "Qwen3.8-27B-Uncensored-Cyber-GGUF/mtp-Qwen3.8-27B-Uncensored-Cyber-Q8_0.gguf",
-      "mmproj": "Qwen3.8-27B-Uncensored-Cyber-GGUF/mmproj-Qwen3.8-27B-Uncensored-Cyber-BF16.gguf",
-      "ngl": 16,
-      "cpu_moe": true,
-      "spec_type": "draft-mtp",
-      "spec_draft_n_max": 2,
-      "cache_type_k_draft": "q8_0",
-      "cache_type_v_draft": "q8_0",
-      "ctx": 12288,
-      "threads": 6,
-      "threads_batch": 8,
-      "flash_attn": true,
-      "cache_type_k": "q4_0",
-      "cache_type_v": "q4_0",
-      "temp": 0.7,
-      "top_p": 0.95,
-      "top_k": 20,
-      "min_p": 0.0,
-      "repeat_penalty": 1.0,
-      "alias": "Qwen3.8-27B-Cyber"
     }
   }
 }
