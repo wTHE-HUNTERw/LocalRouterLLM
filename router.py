@@ -388,6 +388,13 @@ class ModelManager:
                     "--cache-type-k-draft", cfg.get("cache_type_k_draft", "q8_0"),
                     "--cache-type-v-draft", cfg.get("cache_type_v_draft", "q8_0")
                 ])
+                if "ngl_draft" in cfg:
+                    cmd.extend(["--n-gpu-layers-draft", str(cfg["ngl_draft"])])
+            elif cfg.get("spec_type"):
+                cmd.extend([
+                    "--spec-type", cfg.get("spec_type"),
+                    "--spec-draft-n-max", str(cfg.get("spec_draft_n_max", 2))
+                ])
 
             # Ocultar completamente la ventana de terminal en Windows
             startupinfo = None

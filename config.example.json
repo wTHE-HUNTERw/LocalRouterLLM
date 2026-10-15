@@ -246,6 +246,25 @@
       "min_p": 0.05,
       "repeat_penalty": 1.05,
       "alias": "Qwen2.5-7B-Instruct"
+    },
+    "Qwen3.5-2B-MTP": {
+      "name": "Qwen 3.5 2B (MTP Nativo, 64K)",
+      "model": "Qwen3.5-2B-MTP-GGUF/Qwen3.5-2B-Q4_K_M.gguf",
+      "ngl": "all",
+      "spec_type": "draft-mtp",
+      "spec_draft_n_max": 2,
+      "ctx": 65536,
+      "threads": 6,
+      "threads_batch": 8,
+      "flash_attn": true,
+      "cache_type_k": "q4_0",
+      "cache_type_v": "q4_0",
+      "temp": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.05,
+      "repeat_penalty": 1.05,
+      "alias": "Qwen3.5-2B-MTP"
     }
   }
 }
