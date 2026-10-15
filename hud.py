@@ -27,13 +27,14 @@ import tkinter as tk
 class StandaloneHUD:
     def __init__(self, model_name="Modelo IA", est_seconds=4.0):
         self.model_name = model_name
-        self.est_seconds = max(2.0, float(est_seconds))
+        self.est_seconds = max(2.5, float(est_seconds))
         self.progress = 0.0
+        self.target_progress = 5.0
         self.is_done = False
         self.is_failed = False
         self.is_running = True
         self.start_time = time.time()
-        self.status_text = "Iniciando carga de pesos en VRAM..."
+        self.status_text = "Iniciando motor CUDA y pesos en VRAM..."
 
         self.root = tk.Tk()
         self.root.overrideredirect(True)
@@ -95,7 +96,13 @@ class StandaloneHUD:
                 if not line:
                     continue
                 if line.startswith("STATUS:"):
-                    self.status_text = line[7:]
+                    self.status_text = line[7:].strip()
+                elif line.startswith("PROGRESS:"):
+                    try:
+                        p = float(line[9:].strip())
+                        self.target_progress = max(self.target_progress, p)
+                    except ValueError:
+                        pass
                 elif line == "READY":
                     self.is_done = True
                     break
@@ -109,34 +116,50 @@ class StandaloneHUD:
         if not self.root:
             return
 
-        elapsed = time.time() - self.start_time
+        now = time.time()
+        elapsed = now - self.start_time
 
-        # Timeout de seguridad si el router muere (60s)
+        # Timeout de seguridad si el router muere (90s)
         if elapsed > 90 and not self.is_done:
             self._destroy()
             return
 
         if not self.is_done and not self.is_failed:
-            ratio = min(elapsed / self.est_seconds, 1.0)
-            target = 8.0 + ratio * 84.0
-            self.progress += (target - self.progress) * 0.15
-            self.progress = min(self.progress, 93.0)
+            # Progreso continuo en tiempo real basado en el tiempo estimado del modelo
+            time_ratio = elapsed / self.est_seconds
+            if time_ratio <= 1.0:
+                time_target = 5.0 + (time_ratio * 85.0)  # De 5% a 90% suave y parejo
+            else:
+                # Si tarda más de lo previsto, continúa avanzando de forma constante hacia 95%
+                overtime = elapsed - self.est_seconds
+                time_target = min(95.0, 90.0 + (overtime * 0.5))
 
-            pct_int = int(self.progress)
+            # Combinar hitos reales de llama-server y avance continuo por tiempo
+            effective_target = min(96.0, max(self.target_progress, time_target))
+
+            # Interpolación dinámica suave sin frenazos prematuros
+            diff = effective_target - self.progress
+            if diff > 0:
+                step = max(0.20, diff * 0.12)
+                self.progress = min(self.progress + step, effective_target)
+
+            pct_int = int(round(self.progress))
             self.canvas.itemconfig(self.pct_id, text=f"{pct_int}% • {elapsed:.1f}s")
             self.canvas.itemconfig(self.status_id, text=self.status_text)
+
         elif self.is_failed:
             self.canvas.itemconfig(self.pct_id, text="FALLO", fill="#ff4444")
             self.canvas.itemconfig(self.status_id, text="❌ Error al cargar modelo en VRAM", fill="#ff4444")
             self.canvas.itemconfig(self.bar_fill_id, fill="#ff4444")
             self.root.after(2000, self._destroy)
             return
-        else:  # is_done
-            self.progress += (100.0 - self.progress) * 0.45
-            if self.progress >= 99.5:
-                self.progress = 100.0
 
-            pct_int = int(self.progress)
+        else:  # is_done
+            # Transición limpia y fluida al 100%
+            step = max(1.5, (100.0 - self.progress) * 0.35)
+            self.progress = min(100.0, self.progress + step)
+
+            pct_int = int(round(self.progress))
             self.canvas.itemconfig(self.pct_id, text=f"{pct_int}% • {elapsed:.1f}s", fill="#00ff88")
             self.canvas.itemconfig(self.status_id, text="✔ Modelo listo y activo en VRAM", fill="#00ff88")
             self.canvas.itemconfig(self.bar_fill_id, fill="#00ff88")
@@ -145,8 +168,8 @@ class StandaloneHUD:
         fill_w = self.bar_x1 + (total_w * (self.progress / 100.0))
         self.canvas.coords(self.bar_fill_id, self.bar_x1, self.bar_y1, fill_w, self.bar_y2)
 
-        if self.is_done and self.progress >= 99.9:
-            self.root.after(800, self._destroy)
+        if self.is_done and self.progress >= 99.8:
+            self.root.after(700, self._destroy)
             return
 
         if self.is_running:

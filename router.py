@@ -76,13 +76,33 @@ def resolve_model_path(rel_or_abs):
     return os.path.normpath(os.path.join(MODELS_DIR, rel_or_abs))
 
 def get_model_est_seconds(cfg, model_key):
+    # Calcular tamaño real en disco para una estimación precisa
+    model_path = resolve_model_path(cfg.get("model"))
+    mmproj_path = resolve_model_path(cfg.get("mmproj"))
+    draft_path = resolve_model_path(cfg.get("model_draft"))
+
+    total_bytes = 0
+    for p in [model_path, mmproj_path, draft_path]:
+        if p and os.path.exists(p):
+            try:
+                total_bytes += os.path.getsize(p)
+            except Exception:
+                pass
+
+    if total_bytes > 0:
+        total_gb = total_bytes / (1024 ** 3)
+        # Velocidad en NVMe PCIe + asignación VRAM RTX 3050: ~1.8s/GB + 1.5s inicialización
+        est = 1.5 + (total_gb * 1.8)
+        return max(3.5, round(est, 1))
+
+    # Respaldo heurístico según tamaño nominal
     name = cfg.get("name", model_key)
     if "27B" in name or "27b" in model_key:
-        return 12.0
+        return 15.0
     elif "8B" in name or "9B" in name or "8b" in model_key or "9b" in model_key:
-        return 6.5
+        return 9.0
     else:
-        return 4.0
+        return 6.0
 
 class LoadingHUD:
     """Controlador que invoca el HUD en un subproceso aislado para evitar conflictos de hilos con Tcl/Tk."""
@@ -120,6 +140,21 @@ class LoadingHUD:
                 self.proc.stdin.flush()
             except Exception:
                 pass
+
+    def set_progress(self, pct):
+        if self.proc and self.proc.stdin:
+            try:
+                msg = f"PROGRESS:{pct:.1f}\n".encode("utf-8")
+                self.proc.stdin.write(msg)
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+
+    def update(self, status=None, progress=None):
+        if progress is not None:
+            self.set_progress(progress)
+        if status is not None:
+            self.set_status(status)
 
     def finish(self, success=True):
         if self.proc and self.proc.stdin:
@@ -314,7 +349,8 @@ class ModelManager:
                 "--repeat-penalty", str(cfg.get("repeat_penalty", 1.0)),
                 "--parallel", "1",
                 "--cache-idle-slots",
-                "--alias", cfg.get("alias", model_key)
+                "--alias", cfg.get("alias", model_key),
+                "-lv", "4"
             ]
 
             if cfg.get("flash_attn", True):
@@ -367,14 +403,26 @@ class ModelManager:
                     for line in iter(proc.stderr.readline, b''):
                         if not line:
                             break
-                        line_str = line.decode('utf-8', errors='ignore')
-                        if hud_ref:
-                            if 'loading model tensors' in line_str:
-                                hud_ref.set_status("Cargando tensores del modelo a GPU...")
-                            elif 'offloaded' in line_str and 'layers' in line_str:
-                                hud_ref.set_status("Capas transferidas a VRAM...")
-                            elif 'context_init' in line_str or 'llama_context_init' in line_str:
-                                hud_ref.set_status("Optimizando buffer de contexto KV...")
+                        line_str = line.decode('utf-8', errors='ignore').strip()
+                        if not hud_ref or not line_str:
+                            continue
+
+                        if 'llama_server: initializing' in line_str:
+                            hud_ref.update(status="Iniciando motor CUDA y verificando GPU...", progress=10.0)
+                        elif 'load_model: loading model' in line_str or 'common_params_fit' in line_str:
+                            hud_ref.update(status="Accediendo a pesos GGUF y comprobando VRAM...", progress=18.0)
+                        elif 'loaded meta data with' in line_str or 'llama_model_loader' in line_str:
+                            hud_ref.update(status="Arquitectura y metadatos GGUF mapeados...", progress=25.0)
+                        elif 'loading model tensors' in line_str:
+                            hud_ref.update(status="Cargando tensores del modelo en VRAM...", progress=32.0)
+                        elif 'offloaded' in line_str and 'layers' in line_str:
+                            hud_ref.update(status="Capas del modelo asignadas a GPU...", progress=40.0)
+                        elif 'CUDA0 model buffer size' in line_str or 'model buffer size' in line_str:
+                            hud_ref.update(status="Buffers de modelo fijados en memoria GPU...", progress=85.0)
+                        elif 'llama threadpool init' in line_str or 'chat template' in line_str or 'model loaded' in line_str:
+                            hud_ref.update(status="Optimizando contexto KV y slots de atención...", progress=92.0)
+                        elif 'listening on' in line_str:
+                            hud_ref.update(status="Servidor listo en puerto local...", progress=97.0)
                 except Exception:
                     pass
 
