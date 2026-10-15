@@ -309,9 +309,12 @@ class ModelManager:
                 model_key = next(iter(MODELS_CONFIG.keys())) if MODELS_CONFIG else None
 
             if not model_key or model_key not in MODELS_CONFIG:
-                default_key = next(iter(MODELS_CONFIG.keys()))
-                print(f"[Router] Modelo '{model_key}' no encontrado, usando '{default_key}' por defecto.")
-                model_key = default_key
+                if model_key == "Qwen2.5-7B-Speculative" and "Qwen2.5-7B-Instruct" in MODELS_CONFIG:
+                    model_key = "Qwen2.5-7B-Instruct"
+                else:
+                    default_key = next(iter(MODELS_CONFIG.keys()))
+                    print(f"[Router] Modelo '{model_key}' no encontrado, usando '{default_key}' por defecto.")
+                    model_key = default_key
 
             if self.current_model_key == model_key and self.current_process and self.current_process.poll() is None:
                 return True
