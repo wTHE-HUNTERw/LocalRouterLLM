@@ -54,8 +54,9 @@ flowchart LR
 
 ---
 
-## ✨ Features
-
+- 🖥️ **Standalone Executable (`LocalRouterLLM.exe`):** Zero setup required. Download the pre-built `.exe` from GitHub Releases and run it immediately—no Python installation or virtualenv needed!
+- 🌐 **Built-in Web Dashboard (`http://127.0.0.1:8080/`):** Full browser control panel featuring live model telemetry, 1-click test model loader, GPU VRAM flush button, and OpenAI API setup snippets.
+- 🛡️ **Self-Healing Port Recovery & Mutex:** Automatically detects and recovers from stale zombie processes on ports 8080 and 8081; prevents duplicate instances from clashing.
 - 🔄 **On-Demand Dynamic Model Switching:** Select any model in OpenCode or Continue; LocalRouterLLM swaps it into VRAM automatically in ~2 seconds.
 - 🛡️ **Zero VRAM Leakage:** Only **one** model lives in GPU memory at a time. The previous model is cleanly killed, returning 100% of VRAM to Windows.
 - 📊 **Sleek Floating Loading HUD & Radar Tray Animation:** When a model is selected, a floating glassmorphic HUD window displays real-time tensor loading progress, model badge, elapsed time, and dynamic status without stealing focus. The tray icon shows a rotating neon cyan radar during loading.
@@ -64,10 +65,11 @@ flowchart LR
 - 🦙 **Interactive System Tray App (Wallpaper Engine Style):**
   - 🟠 **Amber Dot:** Standby (0% GPU VRAM used, listening for requests).
   - 🟢 **Cyan / Neon Green Dot:** Model actively loaded in GPU.
-  - **Right-Click Menu:** Real-time model status, 1-click **"Liberar VRAM ahora"** flush button, open OpenCode, or quit.
+  - **Menu Actions:** Open Web Dashboard, 1-click **"Liberar VRAM ahora"** flush button, open OpenCode, view `router.log`, open config directory, or quit.
+  - **Double-Click:** Automatically opens the Web Dashboard in your default browser!
 - ⚡ **Intel Hybrid CPU Scheduling Optimization:** Specifically tuned for Intel 12th/13th/14th Gen hybrid processors (e.g. i5-12450HX, i7-13700H) with `--threads 6 --threads-batch 8` to eliminate P-Core / E-Core thread barrier penalties (saving up to 40% latency).
 - 🔌 **100% OpenAI API Compatible:** Exposes `/v1/models`, `/v1/chat/completions`, and `/health` with full Server-Sent Events (SSE) streaming.
-- 📦 **1-Click Installation:** Zero tedious setup. Run `install.bat` or `install.ps1`.
+- 📦 **1-Click Installation:** Zero tedious setup. Run `LocalRouterLLM.exe` directly or use `install.bat` / `install.ps1`.
 
 ---
 

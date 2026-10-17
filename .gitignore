@@ -26,6 +26,9 @@ config.json
 *.log
 *.tmp
 .system_generated/
+build/
+dist/
+*.exe
 
 # OS specific
 Thumbs.db
