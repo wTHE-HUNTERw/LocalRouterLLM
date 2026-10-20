@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localrouterllm"
-version = "1.2.1"
+version = "1.3.0"
 authors = [
   { name="Erick (wTHE-HUNTERw)", email="contact@example.com" },
 ]
@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "pystray>=0.19.5",
     "pillow>=10.0.0",
+    "psutil>=5.9.0",
 ]
 
 [project.urls]

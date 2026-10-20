@@ -14,7 +14,8 @@ a = Analysis(
         'pystray._win32',
         'PIL._imaging',
         'tkinter',
-        'tkinter.ttk'
+        'tkinter.ttk',
+        'psutil'
     ],
     hookspath=[],
     hooksconfig={},

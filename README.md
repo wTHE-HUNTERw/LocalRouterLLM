@@ -58,10 +58,12 @@ flowchart LR
 - 🌐 **Built-in Web Dashboard (`http://127.0.0.1:8080/`):** Full browser control panel featuring live model telemetry, 1-click test model loader, GPU VRAM flush button, and OpenAI API setup snippets.
 - 🛡️ **Self-Healing Port Recovery & Mutex:** Automatically detects and recovers from stale zombie processes on ports 8080 and 8081; prevents duplicate instances from clashing.
 - 🔄 **On-Demand Dynamic Model Switching:** Select any model in OpenCode or Continue; LocalRouterLLM swaps it into VRAM automatically in ~2 seconds.
-- 🛡️ **Zero VRAM Leakage:** Only **one** model lives in GPU memory at a time. The previous model is cleanly killed, returning 100% of VRAM to Windows.
+- 🛡️ **Zero VRAM Leakage & Auto-Discharge on Client Exit:** Only **one** model lives in GPU memory at a time. The previous model is cleanly killed, returning 100% of VRAM to Windows. When you close OpenCode or your AI client, LocalRouterLLM automatically detects it and frees your VRAM immediately.
+- ⚡ **Concurrent Multithreaded Engine & Kernel Mutex:** Built on Python's `ThreadingHTTPServer` with Windows Named Mutex and exclusive port binding (`SO_EXCLUSIVEADDRUSE`), preventing port conflicts and enabling smooth model switches even during streaming.
+- 🧠 **Intelligent Model Resolution:** Normalizes model IDs, provider prefixes (`llamacpp/`, `openai/`), Ollama tags (`:latest`, `:q4_k_m`), and GGUF extensions so model switching never misses or hangs.
 - 📊 **Sleek Floating Loading HUD & Radar Tray Animation:** When a model is selected, a floating glassmorphic HUD window displays real-time tensor loading progress, model badge, elapsed time, and dynamic status without stealing focus. The tray icon shows a rotating neon cyan radar during loading.
 - 🥷 **Silent Background Execution:** Completely hides black console/terminal popup windows (`CREATE_NO_WINDOW`), running silently in the background.
-- ⏳ **Smart 40-Minute Idle Timeout:** If you step away from your computer, LocalRouterLLM unloads the model automatically, letting your laptop stay cool and silent.
+- ⏳ **Smart Inactivity Timeout (10 min default):** If you step away from your computer, LocalRouterLLM unloads the model automatically, letting your laptop stay cool and silent.
 - 🦙 **Interactive System Tray App (Wallpaper Engine Style):**
   - 🟠 **Amber Dot:** Standby (0% GPU VRAM used, listening for requests).
   - 🟢 **Cyan / Neon Green Dot:** Model actively loaded in GPU.

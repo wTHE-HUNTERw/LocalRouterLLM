@@ -16,7 +16,8 @@ import json
 import time
 import subprocess
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import re
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -24,6 +25,40 @@ from collections import deque
 import socket
 import webbrowser
 import logging
+import psutil
+
+MUTEX_HANDLE = None
+
+def acquire_single_instance_mutex():
+    global MUTEX_HANDLE
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        mutex_name = "LocalRouterLLM_SingleInstance_Mutex_8080"
+        handle = kernel32.CreateMutexW(None, True, mutex_name)
+        last_error = kernel32.GetLastError()
+        # ERROR_ALREADY_EXISTS = 183
+        if last_error == 183:
+            if handle:
+                kernel32.CloseHandle(handle)
+            return False
+        MUTEX_HANDLE = handle
+        return True
+    except Exception:
+        return True
+
+def release_single_instance_mutex():
+    global MUTEX_HANDLE
+    if MUTEX_HANDLE and sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.ReleaseMutex(MUTEX_HANDLE)
+            ctypes.windll.kernel32.CloseHandle(MUTEX_HANDLE)
+            MUTEX_HANDLE = None
+        except Exception:
+            pass
 
 if sys.platform == "win32":
     try:
@@ -98,7 +133,9 @@ MODELS_CONFIG = CONFIG.get("models", {})
 ROUTER_HOST = SERVER_CFG.get("host", "127.0.0.1")
 ROUTER_PORT = int(SERVER_CFG.get("port", 8080))
 LLAMA_PORT = int(SERVER_CFG.get("llama_port", 8081))
-IDLE_TIMEOUT_SECONDS = int(SERVER_CFG.get("idle_timeout_minutes", 40)) * 60
+IDLE_TIMEOUT_SECONDS = int(SERVER_CFG.get("idle_timeout_minutes", 10)) * 60
+AUTO_UNLOAD_ON_CLIENT_EXIT = bool(SERVER_CFG.get("auto_unload_on_client_exit", True))
+AUTO_QUIT_ON_CLIENT_EXIT = bool(SERVER_CFG.get("auto_quit_on_client_exit", False))
 START_TIME = time.time()
 
 # Resolver rutas relativas con respaldo automático al directorio del sistema
@@ -143,44 +180,94 @@ def resolve_bin_path(rel_or_abs):
         return fallback_bin
     return primary
 
+def normalize_name(s):
+    return re.sub(r'[^a-z0-9]', '', str(s).lower())
+
 def find_model_key(requested):
     if not requested:
         return next(iter(MODELS_CONFIG.keys())) if MODELS_CONFIG else None
-    if "/" in requested:
-        requested = requested.split("/")[-1]
 
-    # 1. Coincidencia exacta
-    if requested in MODELS_CONFIG:
-        return requested
+    clean = str(requested).strip()
+    # Desenrollar prefijos comunes de proveedores (p. ej. "llamacpp/", "openai/", "local/")
+    if "/" in clean:
+        clean = clean.split("/")[-1]
+    if clean.endswith(".gguf"):
+        clean = clean[:-5]
 
+    # 1. Coincidencia exacta con claves en MODELS_CONFIG
+    if clean in MODELS_CONFIG:
+        return clean
+
+    clean_lower = clean.lower()
     # 2. Coincidencia sin distinción de mayúsculas/minúsculas
-    req_lower = requested.strip().lower()
     for k in MODELS_CONFIG:
-        if k.lower() == req_lower:
+        if k.lower() == clean_lower:
             return k
 
-    # 3. Coincidencia por alias o nombre configurado
+    # 3. Quitar tags de cuantización / versiones de Ollama (:latest, :q4_k_m, @sha256...)
+    base_tag = clean_lower
+    for sep in [":", "@"]:
+        if sep in base_tag:
+            base_tag = base_tag.split(sep)[0].strip()
+
+    for k in MODELS_CONFIG:
+        if k.lower() == base_tag:
+            return k
+
+    # 4. Coincidencia por alias o nombre configurado
     for k, cfg in MODELS_CONFIG.items():
-        alias = cfg.get("alias", "").lower()
-        name = cfg.get("name", "").lower()
-        if alias and alias == req_lower:
+        alias = cfg.get("alias", "").strip().lower()
+        name = cfg.get("name", "").strip().lower()
+        if alias and (alias == clean_lower or alias == base_tag):
             return k
-        if name and name == req_lower:
+        if name and (name == clean_lower or name == base_tag):
             return k
 
-    # 4. Coincidencias semánticas directas
-    if "bonsai" in req_lower and any(w in req_lower for w in ["ternar", "9b", "prism"]):
+    # 5. Coincidencia alfanumérica normalizada (ignora guiones, puntos, espacios)
+    norm_req = normalize_name(base_tag)
+    for k in MODELS_CONFIG:
+        if normalize_name(k) == norm_req:
+            return k
+    for k, cfg in MODELS_CONFIG.items():
+        if cfg.get("alias") and normalize_name(cfg.get("alias")) == norm_req:
+            return k
+        if cfg.get("name") and normalize_name(cfg.get("name")) == norm_req:
+            return k
+
+    # 6. Reglas semánticas específicas comunes
+    if "speculative" in clean_lower and "qwen2.5-7b" in clean_lower:
+        if "Qwen2.5-7B-Instruct" in MODELS_CONFIG:
+            return "Qwen2.5-7B-Instruct"
+    if "bonsai" in clean_lower and any(w in clean_lower for w in ["ternar", "9b", "prism"]):
         if "Ternary-Bonsai-2-9B" in MODELS_CONFIG:
             return "Ternary-Bonsai-2-9B"
-    if "bonsai" in req_lower and any(w in req_lower for w in ["27b", "vision"]):
+    if "bonsai" in clean_lower and any(w in clean_lower for w in ["27b", "vision"]):
         if "Bonsai-27B" in MODELS_CONFIG:
             return "Bonsai-27B"
-    if "qwen2.5-7b-speculative" in req_lower and "Qwen2.5-7B-Instruct" in MODELS_CONFIG:
-        return "Qwen2.5-7B-Instruct"
 
-    # 5. Coincidencia parcial en nombres o alias
-    for k, cfg in MODELS_CONFIG.items():
-        if req_lower in k.lower() or (cfg.get("alias") and req_lower in cfg.get("alias").lower()):
+    # 7. Coincidencia por subcadenas ponderadas (el nombre más largo coincidente)
+    best_key = None
+    best_score = -1
+    for k in MODELS_CONFIG:
+        norm_k = normalize_name(k)
+        score = 0
+        if norm_k in norm_req:
+            score = len(norm_k)
+        elif norm_req in norm_k:
+            score = len(norm_req)
+        if score > best_score and score >= 4:
+            best_score = score
+            best_key = k
+
+    if best_key:
+        return best_key
+
+    # 8. Coincidencia por conjunto de tokens clave
+    req_tokens = set(filter(None, re.split(r'[^a-z0-9]+', clean_lower)))
+    for k in MODELS_CONFIG:
+        k_tokens = set(filter(None, re.split(r'[^a-z0-9]+', k.lower())))
+        common = req_tokens.intersection(k_tokens)
+        if len(common) >= 2:
             return k
 
     return None
@@ -232,23 +319,95 @@ def check_router_health(host="127.0.0.1", port=8080):
     return False
 
 def kill_stale_port_owner(port):
-    if sys.platform != "win32":
-        return
     try:
-        cmd = f'powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"'
-        subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
-        time.sleep(0.4)
-    except Exception:
-        pass
+        my_pid = os.getpid()
+        killed = False
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.laddr and conn.laddr.port == port and conn.pid:
+                if conn.pid != my_pid:
+                    try:
+                        p = psutil.Process(conn.pid)
+                        log_info(f"Terminando proceso huérfano en puerto {port}: PID {conn.pid} ({p.name()})")
+                        p.kill()
+                        killed = True
+                    except Exception:
+                        pass
+        if killed:
+            time.sleep(0.3)
+    except Exception as e:
+        log_warn(f"Error al verificar conexiones de puerto {port} con psutil: {e}")
 
 def free_llama_port():
     try:
         subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-        time.sleep(0.3)
     except Exception:
         pass
-    if is_port_in_use(LLAMA_PORT):
-        kill_stale_port_owner(LLAMA_PORT)
+    kill_stale_port_owner(LLAMA_PORT)
+    # Esperar hasta que Windows libere realmente el socket
+    for _ in range(30):
+        if not is_port_in_use(LLAMA_PORT):
+            break
+        time.sleep(0.1)
+
+def is_client_running():
+    try:
+        has_opencode_proc = False
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            name = (p.info.get("name") or "").lower()
+            if "opencode" in name:
+                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                if "serve" not in cmd and "--service" not in cmd:
+                    has_opencode_proc = True
+                    break
+            elif name in ("node.exe", "cmd.exe", "powershell.exe"):
+                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                if "opencode" in cmd and ("cli.js" in cmd or "@opencode" in cmd):
+                    has_opencode_proc = True
+                    break
+
+        if not has_opencode_proc:
+            return False
+
+        # Si hay procesos, verificar si alguno tiene ventana interactiva activa en Windows
+        if sys.platform == "win32":
+            try:
+                res = subprocess.run(
+                    ["tasklist", "/v", "/fo", "csv", "/fi", "imagename eq opencode.exe"],
+                    capture_output=True, text=True, errors="ignore", timeout=2
+                )
+                if res.returncode == 0:
+                    import csv
+                    reader = csv.reader(res.stdout.strip().splitlines())
+                    rows = list(reader)
+                    if len(rows) > 1:
+                        has_real_window = False
+                        for r in rows[1:]:
+                            if len(r) >= 9:
+                                title = r[8].strip().lower()
+                                if title and title not in ("n/d", "n/a", "opentui clipboard", "desconocido"):
+                                    has_real_window = True
+                                    break
+                        if not has_real_window:
+                            return False
+            except Exception:
+                pass
+
+        return True
+    except Exception:
+        pass
+    return False
+
+def cleanup_orphaned_opencode_services():
+    try:
+        for p in psutil.process_iter(["pid", "name"]):
+            name = (p.info.get("name") or "").lower()
+            if "opencode" in name:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 # =========================================================
 # HUD Integrado para Ventana Flotante de Carga
@@ -520,6 +679,7 @@ def generate_tray_image(state="idle", is_active=None, loading_angle=0):
 class ModelManager:
     def __init__(self):
         self.lock = threading.Lock()
+        self.transition_lock = threading.Lock()
         self.current_model_key = None
         self.current_process = None
         self.last_activity = time.time()
@@ -530,6 +690,8 @@ class ModelManager:
         self.current_hud = None
         self.last_stderr_lines = deque(maxlen=40)
         self.last_error = ""
+        self.client_seen = False
+        self.last_client_seen_time = time.time()
 
     def set_tray_icon(self, icon):
         self.tray_icon = icon
@@ -538,12 +700,14 @@ class ModelManager:
     def update_tray_status(self):
         if not self.tray_icon or not HAS_TRAY:
             return
-        is_active = (self.current_model_key is not None and self.current_process is not None)
+        with self.lock:
+            is_active = (self.current_model_key is not None and self.current_process is not None)
+            active_key = self.current_model_key
         state = "active" if is_active else "idle"
         try:
             self.tray_icon.icon = generate_tray_image(state=state)
             if is_active:
-                name = MODELS_CONFIG.get(self.current_model_key, {}).get("name", self.current_model_key)
+                name = MODELS_CONFIG.get(active_key, {}).get("name", active_key)
                 self.tray_icon.title = f"LocalRouterLLM: Activo [{name}]"
             else:
                 self.tray_icon.title = "LocalRouterLLM: En espera (VRAM libre)"
@@ -587,45 +751,61 @@ class ModelManager:
     def touch(self):
         with self.lock:
             self.last_activity = time.time()
+            self.client_seen = True
+            self.last_client_seen_time = time.time()
 
     def stop_current_model(self):
-        if self.current_process:
-            log_info(f"Deteniendo modelo ({self.current_model_key}) para liberar VRAM...")
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.current_process.pid)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-            except Exception as e:
-                log_warn(f"Error al terminar proceso: {e}")
+        with self.lock:
+            proc = self.current_process
+            key = self.current_model_key
             self.current_process = None
             self.current_model_key = None
-            time.sleep(0.5)
+
+        if proc:
+            log_info(f"Deteniendo modelo ({key}) para liberar VRAM...")
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+            except Exception as e:
+                log_warn(f"Error al terminar proceso PID {proc.pid}: {e}")
+            time.sleep(0.4)
             log_info("VRAM liberada correctamente.")
-            self.update_tray_status()
+        self.update_tray_status()
 
     def ensure_model(self, model_key):
-        with self.lock:
-            self.last_activity = time.time()
+        if model_key and "/" in model_key:
+            model_key = model_key.split("/")[-1]
 
-            if model_key and "/" in model_key:
-                model_key = model_key.split("/")[-1]
-
-            matched_key = find_model_key(model_key)
-            if model_key == "llama-server-active" or not model_key:
+        matched_key = find_model_key(model_key)
+        if model_key == "llama-server-active" or not model_key:
+            with self.lock:
                 if self.current_model_key and self.current_process and self.current_process.poll() is None:
                     return True
-                model_key = next(iter(MODELS_CONFIG.keys())) if MODELS_CONFIG else None
-            elif matched_key:
-                model_key = matched_key
-            else:
-                default_key = next(iter(MODELS_CONFIG.keys()))
-                log_info(f"Modelo '{model_key}' no encontrado, usando '{default_key}' por defecto.")
-                model_key = default_key
+            model_key = next(iter(MODELS_CONFIG.keys())) if MODELS_CONFIG else None
+        elif matched_key:
+            model_key = matched_key
+        else:
+            default_key = next(iter(MODELS_CONFIG.keys()))
+            log_info(f"Modelo '{model_key}' no encontrado, usando '{default_key}' por defecto.")
+            model_key = default_key
 
+        # Comprobar primero con lock rápido si ya está activo el modelo correcto
+        with self.lock:
             if self.current_model_key == model_key and self.current_process and self.current_process.poll() is None:
+                self.last_activity = time.time()
                 return True
 
-            if self.current_process:
-                self.stop_current_model()
+        # Adquirir transition_lock para evitar cambios concurrentes simultáneos
+        with self.transition_lock:
+            # Re-verificar una vez adquirido el transition_lock por si otro hilo ya lo cargó
+            with self.lock:
+                if self.current_model_key == model_key and self.current_process and self.current_process.poll() is None:
+                    self.last_activity = time.time()
+                    return True
+                self.last_activity = time.time()
+
+            # Detener modelo anterior si existía
+            self.stop_current_model()
 
             # Asegurar que el puerto 8081 esté completamente libre de instancias huérfanas
             free_llama_port()
@@ -725,7 +905,7 @@ class ModelManager:
             server_bin_dir = os.path.dirname(server_exe) if (server_exe and os.path.exists(server_exe)) else BIN_DIR
             self.last_stderr_lines.clear()
 
-            self.current_process = subprocess.Popen(
+            new_proc = subprocess.Popen(
                 cmd,
                 cwd=server_bin_dir,
                 stdout=subprocess.DEVNULL,
@@ -733,7 +913,10 @@ class ModelManager:
                 startupinfo=startupinfo,
                 creationflags=creationflags
             )
-            self.current_model_key = model_key
+
+            with self.lock:
+                self.current_process = new_proc
+                self.current_model_key = model_key
 
             def monitor_stderr(proc, hud_ref):
                 try:
@@ -765,18 +948,19 @@ class ModelManager:
                 except Exception:
                     pass
 
-            threading.Thread(target=monitor_stderr, args=(self.current_process, self.current_hud), daemon=True).start()
+            threading.Thread(target=monitor_stderr, args=(new_proc, self.current_hud), daemon=True).start()
 
             start_time = time.time()
             ready = False
             while time.time() - start_time < 60:
-                if self.current_process.poll() is not None:
-                    code = self.current_process.poll()
+                if new_proc.poll() is not None:
+                    code = new_proc.poll()
                     err_summary = "\n".join(list(self.last_stderr_lines)[-8:])
                     self.last_error = f"llama-server terminó con código {code}.\n{err_summary}"
                     log_err(f"llama-server terminó inesperadamente (código {code}):\n{err_summary}")
-                    self.current_process = None
-                    self.current_model_key = None
+                    with self.lock:
+                        self.current_process = None
+                        self.current_model_key = None
                     self.finish_loading(success=False, model_name=model_display_name)
                     return False
                 try:
@@ -800,6 +984,42 @@ class ModelManager:
                 self.finish_loading(success=False, model_name=model_display_name)
                 self.stop_current_model()
                 return False
+
+    def client_monitor_loop(self):
+        while True:
+            time.sleep(2)
+            if not AUTO_UNLOAD_ON_CLIENT_EXIT and not AUTO_QUIT_ON_CLIENT_EXIT:
+                continue
+
+            with self.lock:
+                is_busy = self.is_loading
+                has_model = (self.current_process is not None and self.current_process.poll() is None)
+
+            # Si el router está cargando un modelo o no hay modelo en VRAM, no auto-descargar
+            if is_busy or not has_model:
+                self._client_absent_count = 0
+                continue
+
+            running = is_client_running()
+            if running:
+                self.client_seen = True
+                self.last_client_seen_time = time.time()
+                self._client_absent_count = 0
+            elif self.client_seen:
+                # OpenCode estuvo activo y ahora no se detecta la ventana/proceso cliente
+                self._client_absent_count = getattr(self, "_client_absent_count", 0) + 1
+                if self._client_absent_count >= 3: # 6 segundos de ausencia confirmada
+                    log_info("Se detectó el cierre de la ventana de OpenCode / cliente. Liberando VRAM automáticamente...")
+                    cleanup_orphaned_opencode_services()
+                    self.stop_current_model()
+                    self.client_seen = False
+                    self._client_absent_count = 0
+                    if AUTO_QUIT_ON_CLIENT_EXIT:
+                        log_info("auto_quit_on_client_exit está habilitado. Cerrando LocalRouterLLM...")
+                        action_quit()
+                        break
+            else:
+                self._client_absent_count = 0
 
     def idle_checker_loop(self):
         while True:
@@ -922,7 +1142,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.2.1</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.0</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1063,7 +1283,6 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         # 3. Modelos OpenAI
         if path in ["/v1/models", "/models"]:
-            manager.touch()
             models_list = []
             for m_id, m_data in MODELS_CONFIG.items():
                 models_list.append({
@@ -1099,6 +1318,8 @@ class RouterHandler(BaseHTTPRequestHandler):
             resp = json.dumps({
                 "status": "ok",
                 "active_model": active,
+                "current_model": active,
+                "vram_loaded": active is not None,
                 "uptime_seconds": uptime,
                 "models_count": len(MODELS_CONFIG)
             }).encode("utf-8")
@@ -1110,6 +1331,16 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         # 5. APIs Auxiliares
+        if path == "/api/quit":
+            resp = json.dumps({"status": "ok", "message": "Cerrando LocalRouterLLM..."}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            threading.Thread(target=action_quit, daemon=True).start()
+            return
+
         if path == "/api/vram/release":
             manager.stop_current_model()
             resp = json.dumps({"status": "ok", "message": "VRAM y memoria GPU liberadas al 100%"}).encode("utf-8")
@@ -1171,6 +1402,16 @@ class RouterHandler(BaseHTTPRequestHandler):
         url_parts = urllib.parse.urlparse(self.path)
         path = url_parts.path
 
+        if path == "/api/quit":
+            resp = json.dumps({"status": "ok", "message": "Cerrando LocalRouterLLM..."}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            threading.Thread(target=action_quit, daemon=True).start()
+            return
+
         if path == "/api/vram/release":
             manager.stop_current_model()
             resp = json.dumps({"status": "ok", "message": "VRAM y memoria GPU liberadas al 100%"}).encode("utf-8")
@@ -1220,6 +1461,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         post_data = self.rfile.read(content_length) if content_length > 0 else b""
 
         requested_model = None
+        body_json = None
         if post_data:
             try:
                 body_json = json.loads(post_data.decode("utf-8"))
@@ -1227,17 +1469,19 @@ class RouterHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        if requested_model and "/" in requested_model:
-            requested_model = requested_model.split("/")[-1]
+        matched_key = None
+        if requested_model:
+            matched_key = find_model_key(requested_model)
 
-        if not requested_model:
-            requested_model = manager.get_active_model() or next(iter(MODELS_CONFIG.keys()))
+        target_model = matched_key or requested_model
+        if not target_model or target_model == "llama-server-active":
+            target_model = manager.get_active_model() or next(iter(MODELS_CONFIG.keys()))
 
-        ok = manager.ensure_model(requested_model)
+        ok = manager.ensure_model(target_model)
         if not ok:
             err_msg = json.dumps({
                 "error": {
-                    "message": f"No se pudo cargar el modelo '{requested_model}'.",
+                    "message": f"No se pudo cargar el modelo '{requested_model or target_model}'.",
                     "details": manager.last_error
                 }
             }).encode("utf-8")
@@ -1247,6 +1491,17 @@ class RouterHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(err_msg)
             return
+
+        # Normalizar el campo 'model' al alias configurado para que llama-server lo reconozca
+        active_key = manager.get_active_model() or target_model
+        if body_json and isinstance(body_json, dict) and active_key in MODELS_CONFIG:
+            expected_alias = MODELS_CONFIG[active_key].get("alias", active_key)
+            if body_json.get("model") != expected_alias:
+                body_json["model"] = expected_alias
+                try:
+                    post_data = json.dumps(body_json).encode("utf-8")
+                except Exception:
+                    pass
 
         manager.touch()
         self.proxy_request("POST", post_data)
@@ -1321,11 +1576,13 @@ def action_quit(icon=None, item=None):
     log_info("Cerrando router y liberando memoria...")
     manager.finish_loading(success=False)
     manager.stop_current_model()
-    if icon:
+    target_icon = icon or manager.tray_icon
+    if target_icon:
         try:
-            icon.stop()
+            target_icon.stop()
         except Exception:
             pass
+    release_single_instance_mutex()
     if manager.http_server:
         threading.Thread(target=manager.http_server.shutdown, daemon=True).start()
 
@@ -1354,35 +1611,53 @@ def build_tray_menu():
 # Servidor Principal
 # =========================================================
 def run_server():
-    # 1. Comprobar si ya existe una instancia activa y respondiendo
-    if check_router_health(ROUTER_HOST, ROUTER_PORT):
-        log_info(f"LocalRouterLLM ya está ejecutándose en http://{ROUTER_HOST}:{ROUTER_PORT}.")
+    # 1. Mutex de instancia única a nivel de kernel de Windows
+    if not acquire_single_instance_mutex():
+        log_info(f"LocalRouterLLM ya está ejecutándose en otro proceso.")
         log_info("Abriendo panel web en el navegador...")
         webbrowser.open(f"http://{ROUTER_HOST}:{ROUTER_PORT}/")
         sys.exit(0)
 
-    # 2. Si el puerto 8080 está ocupado pero no responde a /health, limpiar proceso zombi
-    if is_port_in_use(ROUTER_PORT, ROUTER_HOST):
-        log_warn(f"El puerto {ROUTER_PORT} está ocupado por un proceso inactivo. Liberando...")
-        kill_stale_port_owner(ROUTER_PORT)
-        time.sleep(0.5)
+    # 2. Si ya responde /health en 8080, abrir panel web y salir
+    if check_router_health(ROUTER_HOST, ROUTER_PORT):
+        log_info(f"LocalRouterLLM ya responde en http://{ROUTER_HOST}:{ROUTER_PORT}.")
+        webbrowser.open(f"http://{ROUTER_HOST}:{ROUTER_PORT}/")
+        sys.exit(0)
 
-    # 3. Limpiar cualquier servidor llama-server en puerto 8081
+    # 3. Limpiar cualquier proceso zombi en puertos 8080 y 8081
+    if is_port_in_use(ROUTER_PORT, ROUTER_HOST):
+        log_warn(f"El puerto {ROUTER_PORT} está ocupado por un proceso huérfano. Liberando con psutil...")
+        kill_stale_port_owner(ROUTER_PORT)
+        time.sleep(0.3)
+
     free_llama_port()
 
+    # Iniciar hilos de monitorización
     idle_thread = threading.Thread(target=manager.idle_checker_loop, daemon=True)
     idle_thread.start()
 
-    HTTPServer.allow_reuse_address = True
+    client_thread = threading.Thread(target=manager.client_monitor_loop, daemon=True)
+    client_thread.start()
+
     server_address = (ROUTER_HOST, ROUTER_PORT)
+    class RouterServer(ThreadingHTTPServer):
+        daemon_threads = True
+        allow_reuse_address = False
+        def server_bind(self):
+            if sys.platform == "win32":
+                try:
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                except Exception:
+                    pass
+            super().server_bind()
+
     try:
-        httpd = HTTPServer(server_address, RouterHandler)
+        httpd = RouterServer(server_address, RouterHandler)
     except OSError as e:
         log_err(f"No se pudo enlazar al puerto {ROUTER_PORT}: {e}")
-        # Intentar una última limpieza de puerto
         kill_stale_port_owner(ROUTER_PORT)
-        time.sleep(1)
-        httpd = HTTPServer(server_address, RouterHandler)
+        time.sleep(0.5)
+        httpd = RouterServer(server_address, RouterHandler)
 
     manager.http_server = httpd
 
@@ -1403,10 +1678,12 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.2.1 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.0 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")
+    if AUTO_UNLOAD_ON_CLIENT_EXIT:
+        log_info(" [Auto-VRAM] Monitor de clientes activo: VRAM se libera automáticamente al cerrar OpenCode.")
     if HAS_TRAY and tray_icon:
         log_info(" [Bandeja] Icono activo en la barra de tareas (junto al reloj).")
     log_info("=======================================================")
@@ -1417,6 +1694,7 @@ def run_server():
         pass
     finally:
         log_info("Cerrando servidor y liberando memoria...")
+        release_single_instance_mutex()
         manager.finish_loading(success=False)
         manager.stop_current_model()
         if tray_icon:

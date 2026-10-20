@@ -4,7 +4,7 @@ title LocalRouterLLM - Iniciando...
 cd /d "%~dp0"
 
 echo =======================================================
-echo          Iniciando LocalRouterLLM v1.2.1
+echo          Iniciando LocalRouterLLM v1.3.0
 echo =======================================================
 
 REM 1. Comprobar si ya esta ejecutandose y respondiendo en el puerto 8080
