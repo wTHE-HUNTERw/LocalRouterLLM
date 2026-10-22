@@ -692,6 +692,22 @@ class ModelManager:
         self.last_error = ""
         self.client_seen = False
         self.last_client_seen_time = time.time()
+        self.active_requests = 0
+        self.requests_lock = threading.Lock()
+
+    def begin_request(self):
+        with self.requests_lock:
+            self.active_requests += 1
+        self.touch()
+
+    def end_request(self):
+        with self.requests_lock:
+            self.active_requests = max(0, self.active_requests - 1)
+        self.touch()
+
+    def has_active_requests(self):
+        with self.requests_lock:
+            return self.active_requests > 0
 
     def set_tray_icon(self, icon):
         self.tray_icon = icon
@@ -995,8 +1011,8 @@ class ModelManager:
                 is_busy = self.is_loading
                 has_model = (self.current_process is not None and self.current_process.poll() is None)
 
-            # Si el router está cargando un modelo o no hay modelo en VRAM, no auto-descargar
-            if is_busy or not has_model:
+            # Si el router está cargando, atendiendo peticiones activas o no hay modelo en VRAM, no auto-descargar
+            if is_busy or not has_model or self.has_active_requests():
                 self._client_absent_count = 0
                 continue
 
@@ -1008,7 +1024,10 @@ class ModelManager:
             elif self.client_seen:
                 # OpenCode estuvo activo y ahora no se detecta la ventana/proceso cliente
                 self._client_absent_count = getattr(self, "_client_absent_count", 0) + 1
-                if self._client_absent_count >= 3: # 6 segundos de ausencia confirmada
+                if self._client_absent_count >= 15: # 30 segundos de ausencia confirmada (margen seguro contra minimizaciones)
+                    if self.has_active_requests():
+                        self._client_absent_count = 0
+                        continue
                     log_info("Se detectó el cierre de la ventana de OpenCode / cliente. Liberando VRAM automáticamente...")
                     cleanup_orphaned_opencode_services()
                     self.stop_current_model()
@@ -1026,6 +1045,9 @@ class ModelManager:
             time.sleep(15)
             with self.lock:
                 if self.current_process and self.current_process.poll() is None:
+                    if self.has_active_requests():
+                        self.last_activity = time.time()
+                        continue
                     idle_time = time.time() - self.last_activity
                     if idle_time > IDLE_TIMEOUT_SECONDS:
                         mins = int(idle_time // 60)
@@ -1142,7 +1164,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.3.0</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.1</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1514,38 +1536,43 @@ class RouterHandler(BaseHTTPRequestHandler):
                 headers[h] = v
         headers["Host"] = f"127.0.0.1:{LLAMA_PORT}"
 
-        req = urllib.request.Request(target_url, data=data, headers=headers, method=method)
+        manager.begin_request()
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                self.send_response(resp.status)
-                for h, v in resp.getheaders():
-                    if h.lower() not in ["connection", "transfer-encoding", "content-length"]:
-                        self.send_header(h, v)
-                self.send_header("Connection", "close")
-                self.end_headers()
+            req = urllib.request.Request(target_url, data=data, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    self.send_response(resp.status)
+                    for h, v in resp.getheaders():
+                        if h.lower() not in ["connection", "transfer-encoding", "content-length"]:
+                            self.send_header(h, v)
+                    self.send_header("Connection", "close")
+                    self.end_headers()
 
-                while True:
-                    chunk = resp.read(2048)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-        except urllib.error.HTTPError as e:
-            self.send_response(e.code)
-            self.end_headers()
-            self.wfile.write(e.read())
-        except Exception as e:
-            # Si no hay modelo activo aún o llama-server no responde
-            active = manager.get_active_model()
-            msg = str(e)
-            if not active:
-                msg = "Ningún modelo cargado en GPU en este momento. Envía una consulta a /v1/chat/completions para cargar uno automáticamente."
-            err = json.dumps({"error": {"message": msg, "target": target_url}}).encode("utf-8")
-            self.send_response(502)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(err)))
-            self.end_headers()
-            self.wfile.write(err)
+                    while True:
+                        chunk = resp.read(2048)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        manager.touch()
+            except urllib.error.HTTPError as e:
+                self.send_response(e.code)
+                self.end_headers()
+                self.wfile.write(e.read())
+            except Exception as e:
+                # Si no hay modelo activo aún o llama-server no responde
+                active = manager.get_active_model()
+                msg = str(e)
+                if not active:
+                    msg = "Ningún modelo cargado en GPU en este momento. Envía una consulta a /v1/chat/completions para cargar uno automáticamente."
+                err = json.dumps({"error": {"message": msg, "target": target_url}}).encode("utf-8")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err)))
+                self.end_headers()
+                self.wfile.write(err)
+        finally:
+            manager.end_request()
 
 # =========================================================
 # Menú y Manejo de la Bandeja del Sistema (System Tray)
@@ -1678,7 +1705,7 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.3.0 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.1 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")
