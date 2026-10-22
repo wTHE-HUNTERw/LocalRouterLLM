@@ -91,14 +91,15 @@ flowchart LR
 ## 📦 Quick Start
 
 ### 1. Installation
-Clone the repository:
+
+**Option A: Standalone Visual Setup Wizard (Recommended - No Python Required)**
+1. Download `installer.exe` or `LocalRouterLLM-win-x64.zip` from [Releases](https://github.com/wTHE-HUNTERw/LocalRouterLLM/releases).
+2. Double-click **`installer.exe`** (or run `install.bat`) to launch the modern graphical setup assistant. It automatically detects your GPU, llama-server binaries, GGUF models, syncs with OpenCode, and sets up your Desktop shortcut!
+
+**Option B: From Source**
 ```bash
 git clone https://github.com/wTHE-HUNTERw/LocalRouterLLM.git
 cd LocalRouterLLM
-```
-
-Run the 1-click installer:
-```cmd
 install.bat
 ```
 *(Or in PowerShell: `.\install.ps1`)*
@@ -205,12 +206,13 @@ for chunk in response:
 **LocalRouterLLM** es un router inteligente y gestor de VRAM para Windows diseñado para programadores que utilizan modelos locales con **Llama.cpp** y clientes como **OpenCode**, **Continue.dev** o **Aider**.
 
 ### Beneficios Principales:
-1. **Relevo Automático de VRAM:** Nunca más ejecutes archivos `.bat` manualmente. Cambias de modelo en OpenCode y el router descarga el anterior y monta el nuevo en ~2 segundos.
-2. **HUD Flotante & Animación en Bandeja:** Barra de carga futurista sobre la barra de tareas que muestra el porcentaje en tiempo real, tensores y estado del modelo sin interrumpir tu flujo de trabajo.
-3. **Ejecución 100% Silenciosa:** Oculta por completo las terminales emergentes de `llama-server.exe` en segundo plano.
-4. **0% VRAM en Reposo:** Si dejas de trabajar durante 40 minutos, el router libera automáticamente la memoria de la tarjeta gráfica para que tu laptop funcione fresca y silenciosa.
-5. **Icono en la Bandeja del Sistema:** Control total junto al reloj de Windows (con botón para liberar VRAM en 1 clic).
-6. **Optimizado para Procesadores Intel Híbridos:** Configurado con `--threads 6 --threads-batch 8` para exprimir al máximo los núcleos P-Core y evitar micro-congelamientos.
+1. **Asistente Visual de Instalación (`installer.exe`):** Instalador standalone ejecutable con 1 solo clic. Detecta tu tarjeta gráfica, modelos GGUF, llama-server y configura OpenCode sin necesidad de instalar Python.
+2. **Relevo Automático de VRAM:** Nunca más ejecutes archivos `.bat` manualmente. Cambias de modelo en OpenCode y el router descarga el anterior y monta el nuevo en ~2 segundos.
+3. **HUD Flotante & Animación en Bandeja:** Barra de carga futurista sobre la barra de tareas que muestra el porcentaje en tiempo real, tensores y estado del modelo sin interrumpir tu flujo de trabajo.
+4. **Ejecución 100% Silenciosa:** Oculta por completo las terminales emergentes de `llama-server.exe` en segundo plano.
+5. **0% VRAM en Reposo:** Si dejas de trabajar durante 40 minutos, el router libera automáticamente la memoria de la tarjeta gráfica para que tu laptop funcione fresca y silenciosa.
+6. **Icono en la Bandeja del Sistema:** Control total junto al reloj de Windows (con botón para liberar VRAM en 1 clic).
+7. **Optimizado para Procesadores Intel Híbridos:** Configurado con `--threads 6 --threads-batch 8` para exprimir al máximo los núcleos P-Core y evitar micro-congelamientos.
 
 ---
 

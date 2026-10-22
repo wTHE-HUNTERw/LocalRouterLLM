@@ -8,7 +8,13 @@ echo     Iniciando Asistente de Instalacion Visual...
 echo =======================================================
 echo.
 
-REM 1. Detectar interprete de Python
+REM 1. Si existe el instalador compilado standalone (.exe), ejecutarlo directamente
+if exist "%~dp0installer.exe" (
+    start "" "%~dp0installer.exe"
+    exit /b 0
+)
+
+REM 2. Fallback: Detectar interprete de Python para ejecutar installer.py
 set "PYTHON_EXE="
 if exist "C:\Users\%USERNAME%\miniconda3\pythonw.exe" (
     set "PYTHON_EXE=C:\Users\%USERNAME%\miniconda3\pythonw.exe"
@@ -31,11 +37,10 @@ if exist "C:\Users\%USERNAME%\miniconda3\pythonw.exe" (
 )
 
 if "!PYTHON_EXE!"=="" (
-    echo [ERROR] No se encontro Python en el sistema.
-    echo Por favor instala Python 3.10+ o Miniconda para continuar.
+    echo [ERROR] No se encontro Python ni installer.exe.
+    echo Por favor instala Python 3.10+ o descarga installer.exe desde GitHub.
     pause
     exit /b 1
 )
 
-REM 2. Lanzar Asistente Grafico de Instalacion
 start "" "!PYTHON_EXE!" "%~dp0installer.py"

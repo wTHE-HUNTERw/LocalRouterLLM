@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localrouterllm"
-version = "1.3.2"
+version = "1.3.3"
 authors = [
   { name="Erick (wTHE-HUNTERw)", email="contact@example.com" },
 ]

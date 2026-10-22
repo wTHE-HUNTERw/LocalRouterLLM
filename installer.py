@@ -28,10 +28,21 @@ if sys.platform == "win32":
 import tkinter as tk
 from tkinter import messagebox
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def get_bundled_path(rel_path):
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundled = os.path.join(sys._MEIPASS, rel_path)
+        if os.path.exists(bundled):
+            return bundled
+    return os.path.join(BASE_DIR, rel_path)
+
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-EXAMPLE_CONFIG_PATH = os.path.join(BASE_DIR, "config.example.json")
-ICON_PATH = os.path.join(BASE_DIR, "icon.ico")
+EXAMPLE_CONFIG_PATH = get_bundled_path("config.example.json")
+ICON_PATH = get_bundled_path("icon.ico")
 
 def get_desktop_path():
     if sys.platform == "win32":
@@ -449,11 +460,18 @@ class InstallerApp:
 
     def _finish_and_exit(self):
         if self.var_launch_router.get():
+            target_exe = os.path.join(BASE_DIR, "LocalRouterLLM.exe")
             start_bat = os.path.join(BASE_DIR, "start.bat")
-            try:
-                subprocess.Popen(f'cmd /c "{start_bat}"', cwd=BASE_DIR, shell=True)
-            except Exception:
-                pass
+            if os.path.exists(target_exe):
+                try:
+                    subprocess.Popen(f'start "" "{target_exe}"', cwd=BASE_DIR, shell=True)
+                except Exception:
+                    pass
+            elif os.path.exists(start_bat):
+                try:
+                    subprocess.Popen(f'cmd /c "{start_bat}"', cwd=BASE_DIR, shell=True)
+                except Exception:
+                    pass
         elif self.var_launch_dashboard.get():
             webbrowser.open("http://127.0.0.1:8080/")
 
