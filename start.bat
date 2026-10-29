@@ -4,12 +4,12 @@ title LocalRouterLLM - Iniciando...
 cd /d "%~dp0"
 
 echo =======================================================
-echo          Iniciando LocalRouterLLM v1.3.3
+echo          Iniciando LocalRouterLLM v1.3.4
 echo =======================================================
 
 REM 1. Comprobar si ya esta ejecutandose y respondiendo en el puerto 8080
-powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health' -TimeoutSec 1; if ($r.status -eq 'ok') { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
+curl -s -m 1 http://127.0.0.1:8080/health >nul 2>&1
+if !ERRORLEVEL! EQU 0 (
     echo [INFO] LocalRouterLLM ya esta activo y funcionando en segundo plano.
     echo [INFO] Abriendo panel de control en tu navegador...
     start http://127.0.0.1:8080/
@@ -20,7 +20,7 @@ if %ERRORLEVEL% EQU 0 (
 REM 2. Seleccionar ejecutable (LocalRouterLLM.exe si existe, o Python)
 if exist "%~dp0LocalRouterLLM.exe" (
     echo [1/2] Usando binario compilado: LocalRouterLLM.exe
-    start "" "%~dp0LocalRouterLLM.exe"
+    start "" /D "%~dp0" "%~dp0LocalRouterLLM.exe"
 ) else (
     set "PYTHON_EXE="
     if exist "C:\Users\%USERNAME%\miniconda3\pythonw.exe" (
@@ -44,15 +44,15 @@ if exist "%~dp0LocalRouterLLM.exe" (
         )
     )
     echo [1/2] Usando interprete: !PYTHON_EXE!
-    start "" "!PYTHON_EXE!" "%~dp0router.py"
+    start "" /D "%~dp0" "!PYTHON_EXE!" "%~dp0router.py"
 )
 
 echo [2/2] Esperando conexion con el servidor local...
 
 REM 3. Esperar hasta 8 segundos verificando que el servidor responda
-for /L %%i in (1,1,8) do (
-    ping 127.0.0.1 -n 2 >nul 2>&1
-    powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health' -TimeoutSec 1; if ($r.status -eq 'ok') { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
+for /L %%i in (1,1,16) do (
+    ping 127.0.0.1 -n 1 -w 500 >nul 2>&1
+    curl -s -m 1 http://127.0.0.1:8080/health >nul 2>&1
     if !ERRORLEVEL! EQU 0 (
         goto :success
     )
@@ -82,5 +82,5 @@ echo * Endpoint API: http://127.0.0.1:8080/v1
 echo * Panel Web:    http://127.0.0.1:8080/
 echo * Icono activo en la bandeja del sistema (System Tray).
 echo =======================================================
-ping 127.0.0.1 -n 3 >nul 2>&1
+ping 127.0.0.1 -n 2 >nul 2>&1
 exit /b 0

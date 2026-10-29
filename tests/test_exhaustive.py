@@ -1,5 +1,5 @@
 """
-Exhaustive verification suite for LocalRouterLLM v1.3.3.
+Exhaustive verification suite for LocalRouterLLM v1.3.4.
 Tests:
 1. Service startup and /health
 2. Windows Single-Instance Mutex (second instance auto-exits cleanly)
@@ -36,8 +36,15 @@ def http_post(path, data=None, timeout=120):
         data=payload,
         headers={"Content-Type": "application/json"} if data else {}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.status, json.loads(response.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode('utf-8'))
+        except Exception:
+            body = {}
+        return e.code, body
 
 def wait_for_health(timeout=15):
     start = time.time()
@@ -53,7 +60,7 @@ def wait_for_health(timeout=15):
 
 def run_tests():
     print("=" * 60)
-    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.3")
+    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.4")
     print("=" * 60)
 
     # Clean any lingering processes
@@ -114,6 +121,36 @@ def run_tests():
         assert "Phi-4-mini-reasoning" in model_ids
         assert "Qwen3.5-4B-Q4_K_M" in model_ids
         print("  [PASS] Test 3 passed: Models list retrieved successfully.")
+
+        # 3b. Test POST /v1/models does not trigger model load
+        print("\n[TEST 3b] Testing POST /v1/models (should not trigger model load)...")
+        status, post_models_data = http_post("/v1/models")
+        assert status == 200
+        assert "data" in post_models_data
+        status, health = http_get("/health")
+        assert health["vram_loaded"] is False, "POST /v1/models triggered unexpected model load!"
+        print("  [PASS] Test 3b passed: POST /v1/models returns models without loading VRAM.")
+
+        # 3c. Test Unknown Model returns 404 and does NOT load default model
+        print("\n[TEST 3c] Testing unknown model request (should return 404, not load default model)...")
+        status, err_resp = http_post("/v1/chat/completions", {
+            "model": "non-existent-gpt-model-999",
+            "messages": [{"role": "user", "content": "hello"}]
+        })
+        assert status == 404, f"Expected 404 for unknown model, got {status}: {err_resp}"
+        status, health = http_get("/health")
+        assert health["vram_loaded"] is False, "Unknown model triggered unexpected fallback model load!"
+        print("  [PASS] Test 3c passed: Unknown model returned 404 without touching GPU/VRAM.")
+
+        # 3d. Test Empty Model when idle returns 400 and does NOT load default model
+        print("\n[TEST 3d] Testing request with no model specified when idle (should return 400)...")
+        status, err_resp2 = http_post("/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "hello"}]
+        })
+        assert status == 400, f"Expected 400 for missing model, got {status}: {err_resp2}"
+        status, health = http_get("/health")
+        assert health["vram_loaded"] is False, "Missing model triggered unexpected model load!"
+        print("  [PASS] Test 3d passed: Missing model returned 400 without touching GPU/VRAM.")
 
         # 4. Test Model Loading with Provider Prefix & Ollama-style tags
         print("\n[TEST 4] Testing dynamic loading of 'llamacpp/Phi-4-mini-reasoning:latest'...")
@@ -183,6 +220,17 @@ def run_tests():
         llama_running = any('llama-server' in (p.info['name'] or '').lower() for p in psutil.process_iter(['name']))
         assert not llama_running, "llama-server is still running after release!"
         print("  [PASS] Test 7 passed: VRAM released and llama-server process terminated.")
+
+        # 7b. Test Anti-Loop Hold immediately after manual release
+        print("\n[TEST 7b] Testing Anti-Loop Protection (immediate retry of released model should be rejected)...")
+        status, loop_resp = http_post("/v1/chat/completions", {
+            "model": "Qwen3.5-4B-Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}]
+        })
+        assert status == 503, f"Expected 503 for immediate retry of manually released model, got {status}: {loop_resp}"
+        status, health = http_get("/health")
+        assert health["vram_loaded"] is False, "Anti-loop hold failed, model was reloaded!"
+        print("  [PASS] Test 7b passed: Anti-loop protection blocked immediate unwanted reload.")
 
         # 8. Test Client Exit Auto-Unload Monitor
         print("\n[TEST 8] Testing Client Monitor auto-unload logic...")

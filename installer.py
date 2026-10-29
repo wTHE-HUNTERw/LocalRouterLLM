@@ -63,6 +63,136 @@ def get_desktop_path():
         return es_fallback
     return os.path.expanduser("~")
 
+def add_directory_to_user_path(directory):
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_ALL_ACCESS)
+        try:
+            current_path, _ = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current_path = ""
+        paths = [p.strip() for p in current_path.split(";") if p.strip()]
+        norm_dir = os.path.normpath(directory).lower()
+        if not any(os.path.normpath(p).lower() == norm_dir for p in paths):
+            paths.append(directory)
+            new_path = ";".join(paths)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+            try:
+                import ctypes
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x001A
+                SMTO_ABORTIFHUNG = 0x0002
+                res = ctypes.c_ulong()
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", SMTO_ABORTIFHUNG, 5000, ctypes.byref(res)
+                )
+            except Exception:
+                pass
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+def configure_cmd_and_powershell_hooks(base_dir):
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    npm_dir = os.path.join(appdata, "npm")
+    if os.path.exists(npm_dir):
+        # 1. Hook para CMD en opencode.cmd y opencode2.cmd
+        hook_script = (
+            '@ECHO off\n\n'
+            'REM =========================================================\n'
+            'REM LlamaCPP + OpenCode Auto-Router Hook for Windows CMD\n'
+            'REM =========================================================\n'
+            'curl -s -m 1 http://127.0.0.1:8080/health >nul 2>&1\n'
+            'IF ERRORLEVEL 1 (\n'
+            '    echo [LocalRouterLLM] Iniciando Auto-Router en segundo plano...\n'
+            f'    IF EXIST "{base_dir}\\LocalRouterLLM.exe" (\n'
+            f'        start "" /D "{base_dir}" "{base_dir}\\LocalRouterLLM.exe"\n'
+            '    ) ELSE IF EXIST "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" (\n'
+            f'        start "" /D "{base_dir}" "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" "{base_dir}\\router.py"\n'
+            '    ) ELSE (\n'
+            f'        start "" /D "{base_dir}" pythonw "{base_dir}\\router.py"\n'
+            '    )\n'
+            '    ping 127.0.0.1 -n 1 -w 400 >nul 2>&1\n'
+            ')\n\n'
+            'GOTO start\n'
+            ':find_dp0\n'
+            'SET dp0=%~dp0\n'
+            'EXIT /b\n'
+            ':start\n'
+            'CALL :find_dp0\n'
+            '"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\n'
+        )
+        for target in ["opencode.cmd", "opencode2.cmd"]:
+            target_path = os.path.join(npm_dir, target)
+            if os.path.exists(target_path):
+                try:
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(hook_script)
+                except Exception:
+                    pass
+
+        # 2. Comandos globales: localrouter.cmd y localrouterllm.cmd
+        localrouter_cmd_content = (
+            '@ECHO off\n\n'
+            f'SET "ROUTER_DIR={base_dir}"\n'
+            'IF NOT EXIST "%ROUTER_DIR%" SET "ROUTER_DIR=%~dp0"\n\n'
+            'IF /I "%~1"=="--debug" GOTO do_debug\n\n'
+            'curl -s -m 1 http://127.0.0.1:8080/health >nul 2>&1\n'
+            'IF NOT ERRORLEVEL 1 (\n'
+            '    echo [INFO] LocalRouterLLM ya esta activo en segundo plano.\n'
+            '    echo [INFO] Abriendo panel de control en tu navegador...\n'
+            '    start http://127.0.0.1:8080/\n'
+            '    EXIT /b 0\n'
+            ')\n\n'
+            'echo [LocalRouterLLM] Iniciando servidor en segundo plano...\n'
+            'IF EXIST "%ROUTER_DIR%\\LocalRouterLLM.exe" (\n'
+            '    start "" /D "%ROUTER_DIR%" "%ROUTER_DIR%\\LocalRouterLLM.exe"\n'
+            '    GOTO wait_start\n'
+            ')\n'
+            'IF EXIST "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" (\n'
+            '    start "" /D "%ROUTER_DIR%" "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" "%ROUTER_DIR%\\router.py"\n'
+            '    GOTO wait_start\n'
+            ')\n'
+            'start "" /D "%ROUTER_DIR%" pythonw "%ROUTER_DIR%\\router.py"\n\n'
+            ':wait_start\n'
+            'FOR /L %%i IN (1,1,16) DO (\n'
+            '    ping 127.0.0.1 -n 1 -w 500 >nul 2>&1\n'
+            '    curl -s -m 1 http://127.0.0.1:8080/health >nul 2>&1\n'
+            '    IF NOT ERRORLEVEL 1 GOTO success\n'
+            ')\n\n'
+            'echo [ADVERTENCIA] El router tardo mas de lo esperado en responder.\n'
+            'echo Revisa router.log para ver los detalles.\n'
+            'EXIT /b 1\n\n'
+            ':success\n'
+            'echo =======================================================\n'
+            'echo           LocalRouterLLM Iniciado con Exito\n'
+            'echo =======================================================\n'
+            'echo * Estado: En linea y listo\n'
+            'echo * Endpoint API: http://127.0.0.1:8080/v1\n'
+            'echo * Panel Web:    http://127.0.0.1:8080/\n'
+            'echo * Icono activo en la bandeja del sistema (System Tray).\n'
+            'echo =======================================================\n'
+            'EXIT /b 0\n\n'
+            ':do_debug\n'
+            'cd /d "%ROUTER_DIR%"\n'
+            'IF EXIST "%ROUTER_DIR%\\LocalRouterLLM.exe" (\n'
+            '    "%ROUTER_DIR%\\LocalRouterLLM.exe"\n'
+            ') ELSE (\n'
+            '    python "%ROUTER_DIR%\\router.py"\n'
+            ')\n'
+            'EXIT /b %ERRORLEVEL%\n'
+        )
+        for cmd_name in ["localrouter.cmd", "localrouterllm.cmd"]:
+            try:
+                with open(os.path.join(npm_dir, cmd_name), "w", encoding="utf-8") as f:
+                    f.write(localrouter_cmd_content)
+            except Exception:
+                pass
+
 def detect_gpu_info():
     info = {"name": "No detectada", "vram": "N/D", "cuda": False}
     try:
@@ -355,7 +485,7 @@ class InstallerApp:
                 cfg_data.setdefault("server", {})
                 cfg_data["server"]["port"] = port
                 cfg_data["server"]["idle_timeout_minutes"] = idle
-                cfg_data["server"]["auto_unload_on_client_exit"] = False
+                cfg_data["server"]["auto_unload_on_client_exit"] = True
                 with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                     json.dump(cfg_data, f, indent=2, ensure_ascii=False)
             except Exception:
@@ -384,6 +514,14 @@ class InstallerApp:
                     json.dump(op_data, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
+
+        # 4. Configurar hooks de CMD y comandos globales en PATH
+        self._update_progress(75, "Configurando comandos para CMD y PowerShell...")
+        try:
+            configure_cmd_and_powershell_hooks(BASE_DIR)
+            add_directory_to_user_path(BASE_DIR)
+        except Exception:
+            pass
 
         time.sleep(0.4)
         self._update_progress(85, "Creando acceso directo en el Escritorio...")

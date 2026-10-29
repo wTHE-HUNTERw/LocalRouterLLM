@@ -91,6 +91,30 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 EXAMPLE_CONFIG_PATH = os.path.join(BASE_DIR, "config.example.json")
 LOG_PATH = os.path.join(BASE_DIR, "router.log")
 
+# Asegurar salida segura de consola en Windows (CMD / PowerShell)
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure") and sys.stdout is not None:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure") and sys.stderr is not None:
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        import ctypes
+        # Si fue lanzado desde cmd.exe o powershell.exe, vincularse para ver logs en vivo
+        if ctypes.windll.kernel32.AttachConsole(-1):
+            try:
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 # Configurar logging dual a archivo y consola
 logger = logging.getLogger("LocalRouterLLM")
 logger.setLevel(logging.INFO)
@@ -104,9 +128,13 @@ try:
 except Exception:
     pass
 
-sh = logging.StreamHandler(sys.stdout)
-sh.setFormatter(log_formatter)
-logger.addHandler(sh)
+if sys.stdout is not None:
+    try:
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(log_formatter)
+        logger.addHandler(sh)
+    except Exception:
+        pass
 
 def log_info(msg):
     logger.info(msg)
@@ -397,15 +425,18 @@ def is_client_running():
         pass
     return False
 
-def cleanup_orphaned_opencode_services():
+def cleanup_orphaned_opencode_services(force_all=False):
     try:
-        for p in psutil.process_iter(["pid", "name"]):
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
             name = (p.info.get("name") or "").lower()
             if "opencode" in name:
-                try:
-                    p.kill()
-                except Exception:
-                    pass
+                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                is_service = ("serve" in cmd or "--service" in cmd)
+                if force_all or is_service or not is_client_running():
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
     except Exception:
         pass
 
@@ -694,6 +725,8 @@ class ModelManager:
         self.last_client_seen_time = time.time()
         self.active_requests = 0
         self.requests_lock = threading.Lock()
+        self.manual_release_time = 0.0
+        self.manual_released_model = None
 
     def begin_request(self):
         with self.requests_lock:
@@ -770,12 +803,15 @@ class ModelManager:
             self.client_seen = True
             self.last_client_seen_time = time.time()
 
-    def stop_current_model(self):
+    def stop_current_model(self, manual=False):
         with self.lock:
             proc = self.current_process
             key = self.current_model_key
             self.current_process = None
             self.current_model_key = None
+            if manual and key:
+                self.manual_release_time = time.time()
+                self.manual_released_model = key
 
         if proc:
             log_info(f"Deteniendo modelo ({key}) para liberar VRAM...")
@@ -797,13 +833,14 @@ class ModelManager:
             with self.lock:
                 if self.current_model_key and self.current_process and self.current_process.poll() is None:
                     return True
-            model_key = next(iter(MODELS_CONFIG.keys())) if MODELS_CONFIG else None
+            self.last_error = "No hay ningún modelo activo en GPU actualmente."
+            return False
         elif matched_key:
             model_key = matched_key
         else:
-            default_key = next(iter(MODELS_CONFIG.keys()))
-            log_info(f"Modelo '{model_key}' no encontrado, usando '{default_key}' por defecto.")
-            model_key = default_key
+            self.last_error = f"Modelo '{model_key}' no encontrado en config.json. Modelos disponibles: {list(MODELS_CONFIG.keys())}"
+            log_warn(self.last_error)
+            return False
 
         # Comprobar primero con lock rápido si ya está activo el modelo correcto
         with self.lock:
@@ -1011,8 +1048,8 @@ class ModelManager:
                 is_busy = self.is_loading
                 has_model = (self.current_process is not None and self.current_process.poll() is None)
 
-            # Si el router está cargando, atendiendo peticiones activas o no hay modelo en VRAM, no auto-descargar
-            if is_busy or not has_model or self.has_active_requests():
+            # Si el router está cargando o no hay modelo en VRAM, no auto-descargar
+            if is_busy or not has_model:
                 self._client_absent_count = 0
                 continue
 
@@ -1024,10 +1061,7 @@ class ModelManager:
             elif self.client_seen:
                 # OpenCode estuvo activo y ahora no se detecta la ventana/proceso cliente
                 self._client_absent_count = getattr(self, "_client_absent_count", 0) + 1
-                if self._client_absent_count >= 15: # 30 segundos de ausencia confirmada (margen seguro contra minimizaciones)
-                    if self.has_active_requests():
-                        self._client_absent_count = 0
-                        continue
+                if self._client_absent_count >= 5: # 10 segundos de ausencia confirmada
                     log_info("Se detectó el cierre de la ventana de OpenCode / cliente. Liberando VRAM automáticamente...")
                     cleanup_orphaned_opencode_services()
                     self.stop_current_model()
@@ -1164,7 +1198,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.3.3</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.4</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1272,6 +1306,16 @@ def get_dashboard_html():
 # =========================================================
 def launch_opencode():
     subprocess.Popen("cmd /c start opencode", shell=True)
+
+INFERENCE_ENDPOINTS = {
+    "/v1/chat/completions", "/chat/completions",
+    "/v1/completions", "/completions",
+    "/v1/embeddings", "/embeddings",
+    "/v1/rerank", "/rerank",
+    "/v1/tokenize", "/tokenize",
+    "/v1/detokenize", "/detokenize",
+    "/v1/audio/transcriptions", "/v1/audio/translations"
+}
 
 class RouterHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -1435,7 +1479,8 @@ class RouterHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/vram/release":
-            manager.stop_current_model()
+            manager.stop_current_model(manual=True)
+            cleanup_orphaned_opencode_services()
             resp = json.dumps({"status": "ok", "message": "VRAM y memoria GPU liberadas al 100%"}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1447,6 +1492,55 @@ class RouterHandler(BaseHTTPRequestHandler):
         if path == "/api/opencode":
             launch_opencode()
             resp = json.dumps({"status": "ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # Modelos OpenAI (POST soportado para clientes que consultan con POST)
+        if path in ["/v1/models", "/models"]:
+            models_list = []
+            for m_id, m_data in MODELS_CONFIG.items():
+                models_list.append({
+                    "id": m_id,
+                    "object": "model",
+                    "created": int(START_TIME),
+                    "owned_by": "local-router-llm",
+                    "name": m_data.get("name", m_id)
+                })
+            models_list.append({
+                "id": "llama-server-active",
+                "object": "model",
+                "created": int(START_TIME),
+                "owned_by": "local-router-llm",
+                "name": "LocalRouterLLM - Servidor Activo"
+            })
+            resp_payload = {
+                "object": "list",
+                "data": models_list
+            }
+            body = json.dumps(resp_payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # Salud del Router
+        if path in ["/health", "/v1/health"]:
+            active = manager.get_active_model()
+            uptime = int(time.time() - START_TIME)
+            resp = json.dumps({
+                "status": "ok",
+                "active_model": active,
+                "current_model": active,
+                "vram_loaded": active is not None,
+                "uptime_seconds": uptime,
+                "models_count": len(MODELS_CONFIG)
+            }).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(resp)))
@@ -1467,7 +1561,7 @@ class RouterHandler(BaseHTTPRequestHandler):
                         pass
             if target:
                 ok = manager.ensure_model(target)
-                status_code = 200 if ok else 500
+                status_code = 200 if ok else 400
                 resp = json.dumps({"status": "ok" if ok else "error", "error": manager.last_error}).encode("utf-8")
             else:
                 status_code = 400
@@ -1481,6 +1575,21 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length) if content_length > 0 else b""
+
+        # Si no es un endpoint de inferencia y no hay modelo activo, no cargar nada
+        if path not in INFERENCE_ENDPOINTS and not manager.get_active_model():
+            err_msg = json.dumps({
+                "error": {
+                    "message": f"Endpoint '{path}' no reconocido para inferencia y no hay ningún modelo activo en GPU.",
+                    "type": "invalid_request_error"
+                }
+            }).encode("utf-8")
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err_msg)))
+            self.end_headers()
+            self.wfile.write(err_msg)
+            return
 
         requested_model = None
         body_json = None
@@ -1496,8 +1605,72 @@ class RouterHandler(BaseHTTPRequestHandler):
             matched_key = find_model_key(requested_model)
 
         target_model = matched_key or requested_model
-        if not target_model or target_model == "llama-server-active":
-            target_model = manager.get_active_model() or next(iter(MODELS_CONFIG.keys()))
+
+        # Si no se especificó modelo
+        if not target_model:
+            target_model = manager.get_active_model()
+            if not target_model:
+                err_msg = json.dumps({
+                    "error": {
+                        "message": "No se especificó el parámetro 'model' y no hay ningún modelo activo en GPU actualmente.",
+                        "type": "invalid_request_error"
+                    }
+                }).encode("utf-8")
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_msg)))
+                self.end_headers()
+                self.wfile.write(err_msg)
+                return
+
+        # Si se solicita 'llama-server-active' pero la GPU está libre
+        if target_model == "llama-server-active":
+            target_model = manager.get_active_model()
+            if not target_model:
+                err_msg = json.dumps({
+                    "error": {
+                        "message": "llama-server-active fue solicitado pero no hay ningún modelo activo en GPU. Especifica un modelo en tu petición.",
+                        "type": "invalid_request_error"
+                    }
+                }).encode("utf-8")
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err_msg)))
+                self.end_headers()
+                self.wfile.write(err_msg)
+                return
+
+        # Si el modelo solicitado no existe en la configuración
+        if requested_model and not matched_key:
+            err_msg = json.dumps({
+                "error": {
+                    "message": f"El modelo '{requested_model}' no está configurado en LocalRouterLLM.",
+                    "type": "invalid_request_error",
+                    "available_models": list(MODELS_CONFIG.keys())
+                }
+            }).encode("utf-8")
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err_msg)))
+            self.end_headers()
+            self.wfile.write(err_msg)
+            return
+
+        # Protección contra bucle de reintento tras liberación manual de VRAM
+        now = time.time()
+        if (now - manager.manual_release_time < 12.0) and (target_model == manager.manual_released_model):
+            err_msg = json.dumps({
+                "error": {
+                    "message": "VRAM fue liberada manualmente hace unos segundos. Reintento automático bloqueado temporalmente para evitar recargas automáticas no deseadas.",
+                    "type": "vram_manual_release_hold"
+                }
+            }).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err_msg)))
+            self.end_headers()
+            self.wfile.write(err_msg)
+            return
 
         ok = manager.ensure_model(target_model)
         if not ok:
@@ -1581,7 +1754,8 @@ def action_open_dashboard(icon=None, item=None):
     webbrowser.open(f"http://{ROUTER_HOST}:{ROUTER_PORT}/")
 
 def action_release_vram(icon=None, item=None):
-    manager.stop_current_model()
+    manager.stop_current_model(manual=True)
+    cleanup_orphaned_opencode_services()
 
 def action_open_opencode(icon=None, item=None):
     launch_opencode()
@@ -1658,6 +1832,7 @@ def run_server():
         time.sleep(0.3)
 
     free_llama_port()
+    cleanup_orphaned_opencode_services()
 
     # Iniciar hilos de monitorización
     idle_thread = threading.Thread(target=manager.idle_checker_loop, daemon=True)
@@ -1705,7 +1880,7 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.3.3 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.4 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")

@@ -4,7 +4,7 @@
     "port": 8080,
     "llama_port": 8081,
     "idle_timeout_minutes": 10,
-    "auto_unload_on_client_exit": false,
+    "auto_unload_on_client_exit": true,
     "auto_quit_on_client_exit": false
   },
   "llama_cpp": {
