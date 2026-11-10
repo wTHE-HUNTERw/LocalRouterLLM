@@ -7,6 +7,12 @@ if (-not (Test-Path (Join-Path $routerDir "router.py"))) {
     $routerDir = "c:\Program Files\LlamaCPP\LocalRouterLLM"
 }
 
+$exe = Join-Path $routerDir "LocalRouterLLM.exe"
+if (Test-Path $exe) {
+    Start-Process -FilePath $exe -WorkingDirectory $routerDir
+    exit 0
+}
+
 $script = Join-Path $routerDir "router.py"
 $pywCandidates = @(
     "C:\Users\$env:USERNAME\miniconda3\pythonw.exe",

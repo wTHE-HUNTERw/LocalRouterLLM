@@ -1838,13 +1838,19 @@ def run_server():
                     pass
             super().server_bind()
 
-    try:
-        httpd = RouterServer(server_address, RouterHandler)
-    except OSError as e:
-        log_err(f"No se pudo enlazar al puerto {ROUTER_PORT}: {e}")
-        kill_stale_port_owner(ROUTER_PORT)
-        time.sleep(0.5)
-        httpd = RouterServer(server_address, RouterHandler)
+    httpd = None
+    for attempt in range(12):
+        try:
+            httpd = RouterServer(server_address, RouterHandler)
+            break
+        except OSError as e:
+            if attempt == 0:
+                log_err(f"Puerto {ROUTER_PORT} ocupado o en TIME_WAIT ({e}). Reintentando liberación...")
+                kill_stale_port_owner(ROUTER_PORT)
+            time.sleep(0.5)
+    if not httpd:
+        log_err(f"No se pudo enlazar al puerto {ROUTER_PORT} tras múltiples intentos.")
+        sys.exit(1)
 
     manager.http_server = httpd
 
