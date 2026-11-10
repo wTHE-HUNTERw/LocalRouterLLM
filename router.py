@@ -103,17 +103,18 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-    try:
-        import ctypes
-        # Si fue lanzado desde cmd.exe o powershell.exe, vincularse para ver logs en vivo
-        if ctypes.windll.kernel32.AttachConsole(-1):
-            try:
-                sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
-                sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    if "--debug" in sys.argv or "--console" in sys.argv:
+        try:
+            import ctypes
+            # Si fue lanzado explícitamente con --debug o --console, vincularse para ver logs
+            if ctypes.windll.kernel32.AttachConsole(-1):
+                try:
+                    sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                    sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 # Configurar logging dual a archivo y consola
 logger = logging.getLogger("LocalRouterLLM")
@@ -378,61 +379,44 @@ def free_llama_port():
         time.sleep(0.1)
 
 def is_client_running():
+    """
+    Verifica si algún cliente interactivo (OpenCode CLI, Cursor, VS Code, etc.)
+    está actualmente en ejecución.
+    """
     try:
-        has_opencode_proc = False
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
             name = (p.info.get("name") or "").lower()
+            cmd = " ".join(p.info.get("cmdline") or []).lower()
             if "opencode" in name:
-                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                # OpenCode interactivo en ejecución (no el demonio de fondo)
                 if "serve" not in cmd and "--service" not in cmd:
-                    has_opencode_proc = True
-                    break
-            elif name in ("node.exe", "cmd.exe", "powershell.exe"):
-                cmd = " ".join(p.info.get("cmdline") or []).lower()
-                if "opencode" in cmd and ("cli.js" in cmd or "@opencode" in cmd):
-                    has_opencode_proc = True
-                    break
-
-        if not has_opencode_proc:
-            return False
-
-        # Si hay procesos, verificar si alguno tiene ventana interactiva activa en Windows
-        if sys.platform == "win32":
-            try:
-                res = subprocess.run(
-                    ["tasklist", "/v", "/fo", "csv", "/fi", "imagename eq opencode.exe"],
-                    capture_output=True, text=True, errors="ignore", timeout=2
-                )
-                if res.returncode == 0:
-                    import csv
-                    reader = csv.reader(res.stdout.strip().splitlines())
-                    rows = list(reader)
-                    if len(rows) > 1:
-                        has_real_window = False
-                        for r in rows[1:]:
-                            if len(r) >= 9:
-                                title = r[8].strip().lower()
-                                if title and title not in ("n/d", "n/a", "opentui clipboard", "desconocido"):
-                                    has_real_window = True
-                                    break
-                        if not has_real_window:
-                            return False
-            except Exception:
-                pass
-
-        return True
+                    return True
+            elif name in ("node.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
+                if "opencode" in cmd and ("cli.js" in cmd or "@opencode" in cmd or "bin/opencode" in cmd):
+                    return True
+            elif name in ("cursor.exe", "code.exe"):
+                if "opencode" in cmd:
+                    return True
+        return False
     except Exception:
-        pass
-    return False
+        return False
 
 def cleanup_orphaned_opencode_services(force_all=False):
+    """
+    Limpia únicamente demonios de fondo huérfanos de OpenCode ('serve --service').
+    NUNCA termina procesos interactivos de OpenCode ni clientes activos.
+    """
     try:
+        # Si el cliente interactivo sigue activo, no tocar nada a menos que sea force_all explícito
+        if is_client_running() and not force_all:
+            return
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
             name = (p.info.get("name") or "").lower()
             if "opencode" in name:
                 cmd = " ".join(p.info.get("cmdline") or []).lower()
                 is_service = ("serve" in cmd or "--service" in cmd)
-                if force_all or is_service or not is_client_running():
+                # Solo terminar si es estrictamente un servicio de fondo desatendido
+                if is_service:
                     try:
                         p.kill()
                     except Exception:
@@ -1047,9 +1031,10 @@ class ModelManager:
             with self.lock:
                 is_busy = self.is_loading
                 has_model = (self.current_process is not None and self.current_process.poll() is None)
+                active_reqs = self.has_active_requests()
 
-            # Si el router está cargando o no hay modelo en VRAM, no auto-descargar
-            if is_busy or not has_model:
+            # Si el router está cargando, atendiendo peticiones o no hay modelo en VRAM, no auto-descargar
+            if is_busy or not has_model or active_reqs:
                 self._client_absent_count = 0
                 continue
 
@@ -1198,7 +1183,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.3.4</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.5</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1880,7 +1865,7 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.3.4 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.5 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")

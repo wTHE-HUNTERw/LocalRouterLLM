@@ -246,7 +246,7 @@ def detect_opencode():
 class InstallerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Asistente de Instalación - LocalRouterLLM v1.3.1")
+        self.root.title("Asistente de Instalación - LocalRouterLLM v1.3.5")
         self.root.geometry("700x560")
         self.root.minsize(700, 560)
         self.root.configure(bg="#090d16")
@@ -284,7 +284,7 @@ class InstallerApp:
         titles_frame = tk.Frame(inner, bg="#101726")
         titles_frame.pack(side="left", fill="y")
 
-        self.title_lbl = tk.Label(titles_frame, text="Instalación de LocalRouterLLM v1.3.1",
+        self.title_lbl = tk.Label(titles_frame, text="Instalación de LocalRouterLLM v1.3.5",
                                   font=("Segoe UI", 15, "bold"), fg="#ffffff", bg="#101726")
         self.title_lbl.pack(anchor="w")
 
