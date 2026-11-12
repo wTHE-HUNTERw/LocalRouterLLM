@@ -102,7 +102,8 @@ def configure_cmd_and_powershell_hooks(base_dir):
     if os.path.exists(npm_dir):
         # 1. Hook para CMD en opencode.cmd y opencode2.cmd
         hook_script = (
-            '@ECHO off\n\n'
+            '@ECHO off\n'
+            'SETLOCAL\n\n'
             'REM =========================================================\n'
             'REM LlamaCPP + OpenCode Auto-Router Hook for Windows CMD\n'
             'REM =========================================================\n'
@@ -111,20 +112,25 @@ def configure_cmd_and_powershell_hooks(base_dir):
             '    echo [LocalRouterLLM] Iniciando Auto-Router en segundo plano...\n'
             f'    IF EXIST "{base_dir}\\LocalRouterLLM.exe" (\n'
             f'        start "" /D "{base_dir}" "{base_dir}\\LocalRouterLLM.exe"\n'
+            '    ) ELSE IF EXIST "C:\\Program Files\\LlamaCPP\\LocalRouterLLM\\LocalRouterLLM.exe" (\n'
+            '        start "" /D "C:\\Program Files\\LlamaCPP\\LocalRouterLLM" "C:\\Program Files\\LlamaCPP\\LocalRouterLLM\\LocalRouterLLM.exe"\n'
             '    ) ELSE IF EXIST "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" (\n'
             f'        start "" /D "{base_dir}" "C:\\Users\\%USERNAME%\\miniconda3\\pythonw.exe" "{base_dir}\\router.py"\n'
             '    ) ELSE (\n'
             f'        start "" /D "{base_dir}" pythonw "{base_dir}\\router.py"\n'
             '    )\n'
-            '    ping 127.0.0.1 -n 1 -w 400 >nul 2>&1\n'
+            '    ping 127.0.0.1 -n 1 -w 500 >nul 2>&1\n'
             ')\n\n'
-            'GOTO start\n'
-            ':find_dp0\n'
-            'SET dp0=%~dp0\n'
-            'EXIT /b\n'
-            ':start\n'
-            'CALL :find_dp0\n'
-            '"%dp0%\\node_modules\\@opencode\\cli\\bin\\opencode.exe"   %*\n'
+            'SET "CLI_EXE=%~dp0node_modules\\@opencode\\cli\\bin\\opencode.exe"\n'
+            'IF NOT EXIST "%CLI_EXE%" (\n'
+            '    echo [ERROR] No se encontro opencode.exe en %CLI_EXE%\n'
+            '    EXIT /b 1\n'
+            ')\n\n'
+            '"%CLI_EXE%" %*\n'
+            'SET "EXIT_CODE=%ERRORLEVEL%"\n\n'
+            'REM Restaurar modo de consola\n'
+            'echo \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h>nul 2>&1\n\n'
+            'EXIT /b %EXIT_CODE%\n'
         )
         for target in ["opencode.cmd", "opencode2.cmd"]:
             target_path = os.path.join(npm_dir, target)
@@ -246,7 +252,7 @@ def detect_opencode():
 class InstallerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Asistente de Instalación - LocalRouterLLM v1.3.5")
+        self.root.title("Asistente de Instalación - LocalRouterLLM v1.3.6")
         self.root.geometry("700x560")
         self.root.minsize(700, 560)
         self.root.configure(bg="#090d16")
@@ -284,7 +290,7 @@ class InstallerApp:
         titles_frame = tk.Frame(inner, bg="#101726")
         titles_frame.pack(side="left", fill="y")
 
-        self.title_lbl = tk.Label(titles_frame, text="Instalación de LocalRouterLLM v1.3.5",
+        self.title_lbl = tk.Label(titles_frame, text="Instalación de LocalRouterLLM v1.3.6",
                                   font=("Segoe UI", 15, "bold"), fg="#ffffff", bg="#101726")
         self.title_lbl.pack(anchor="w")
 

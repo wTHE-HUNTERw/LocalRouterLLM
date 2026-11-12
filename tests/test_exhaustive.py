@@ -1,5 +1,5 @@
 """
-Exhaustive verification suite for LocalRouterLLM v1.3.5.
+Exhaustive verification suite for LocalRouterLLM v1.3.6.
 Tests:
 1. Service startup and /health
 2. Windows Single-Instance Mutex (second instance auto-exits cleanly)
@@ -60,7 +60,7 @@ def wait_for_health(timeout=15):
 
 def run_tests():
     print("=" * 60)
-    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.5")
+    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.6")
     print("=" * 60)
 
     # Clean any lingering processes
@@ -151,6 +151,17 @@ def run_tests():
         status, health = http_get("/health")
         assert health["vram_loaded"] is False, "Missing model triggered unexpected model load!"
         print("  [PASS] Test 3d passed: Missing model returned 400 without touching GPU/VRAM.")
+
+        # 3e. Test synthetic restart message interception (should return 200 without loading VRAM)
+        print("\n[TEST 3e] Testing synthetic restart message interception (should not load VRAM)...")
+        status, drain_resp = http_post("/v1/chat/completions", {
+            "model": "Ternary-Bonsai-2-9B",
+            "messages": [{"role": "user", "content": "The server restarted while you were working. Continue from where you left off without repeating completed work."}]
+        })
+        assert status == 200, f"Expected 200, got {status}"
+        status, health = http_get("/health")
+        assert health["vram_loaded"] is False, "Synthetic restart message should NOT have loaded VRAM!"
+        print("  [PASS] Test 3e passed: Synthetic restart request intercepted without loading VRAM.")
 
         # 4. Test Model Loading with Provider Prefix & Ollama-style tags
         print("\n[TEST 4] Testing dynamic loading of 'llamacpp/Phi-4-mini-reasoning:latest'...")

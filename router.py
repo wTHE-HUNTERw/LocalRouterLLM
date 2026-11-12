@@ -378,6 +378,36 @@ def free_llama_port():
             break
         time.sleep(0.1)
 
+def sanitize_opencode_db():
+    """
+    Limpia sesiones residuales colgadas con time_busy o mensajes sintéticos en opencode.db.
+    Evita que OpenCode intente reanudar sesiones viejas o enviar peticiones automáticas al iniciar.
+    """
+    try:
+        import sqlite3
+        db_path = os.path.expanduser(r"~/.local/share/opencode/opencode.db")
+        if os.path.exists(db_path):
+            con = sqlite3.connect(db_path, timeout=1.5)
+            cur = con.cursor()
+            now_ms = int(time.time() * 1000)
+            cur.execute("UPDATE session_v2 SET time_busy = NULL, time_archived = COALESCE(time_archived, ?) WHERE time_busy IS NOT NULL", (now_ms,))
+            cur.execute("DELETE FROM session_message WHERE type = 'synthetic'")
+            con.commit()
+            con.close()
+    except Exception:
+        pass
+    try:
+        import glob
+        locks_dir = os.path.expanduser(r"~/.local/state/opencode/locks")
+        if os.path.exists(locks_dir):
+            for f in glob.glob(os.path.join(locks_dir, "*")):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 def is_client_running():
     """
     Verifica si algún cliente interactivo (OpenCode CLI, Cursor, VS Code, etc.)
@@ -385,42 +415,45 @@ def is_client_running():
     """
     try:
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
-            name = (p.info.get("name") or "").lower()
-            cmd = " ".join(p.info.get("cmdline") or []).lower()
-            if "opencode" in name:
-                # OpenCode interactivo en ejecución (no el demonio de fondo)
-                if "serve" not in cmd and "--service" not in cmd:
-                    return True
-            elif name in ("node.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
-                if "opencode" in cmd and ("cli.js" in cmd or "@opencode" in cmd or "bin/opencode" in cmd):
-                    return True
-            elif name in ("cursor.exe", "code.exe"):
-                if "opencode" in cmd:
-                    return True
+            try:
+                name = (p.info.get("name") or "").lower()
+                cmd = " ".join(p.info.get("cmdline") or []).lower()
+                if "opencode" in name:
+                    # OpenCode interactivo en ejecución (no el demonio de fondo desatendido)
+                    if "serve" not in cmd and "--service" not in cmd:
+                        return True
+                elif name in ("node.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
+                    if "opencode" in cmd and ("cli.js" in cmd or "@opencode" in cmd or "bin/opencode" in cmd):
+                        return True
+                elif name in ("cursor.exe", "code.exe"):
+                    if "opencode" in cmd:
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
         return False
     except Exception:
         return False
 
 def cleanup_orphaned_opencode_services(force_all=False):
     """
-    Limpia únicamente demonios de fondo huérfanos de OpenCode ('serve --service').
-    NUNCA termina procesos interactivos de OpenCode ni clientes activos.
+    Limpia demonios de fondo huérfanos de OpenCode ('serve --service').
+    Si force_all=False y hay un cliente interactivo activo, no termina los servicios.
+    Si el cliente interactivo no existe, termina los demonios desatendidos para que no sigan
+    enviando peticiones en bucle infinito.
     """
     try:
-        # Si el cliente interactivo sigue activo, no tocar nada a menos que sea force_all explícito
         if is_client_running() and not force_all:
             return
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
-            name = (p.info.get("name") or "").lower()
-            if "opencode" in name:
-                cmd = " ".join(p.info.get("cmdline") or []).lower()
-                is_service = ("serve" in cmd or "--service" in cmd)
-                # Solo terminar si es estrictamente un servicio de fondo desatendido
-                if is_service:
-                    try:
+            try:
+                name = (p.info.get("name") or "").lower()
+                if "opencode" in name:
+                    cmd = " ".join(p.info.get("cmdline") or []).lower()
+                    is_service = ("serve" in cmd or "--service" in cmd)
+                    if is_service:
                         p.kill()
-                    except Exception:
-                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
     except Exception:
         pass
 
@@ -841,6 +874,13 @@ class ModelManager:
                     return True
                 self.last_activity = time.time()
 
+            # Esperar a que peticiones activas en el modelo actual terminen antes de cambiar
+            for _ in range(25):
+                with self.lock:
+                    if not self.has_active_requests():
+                        break
+                time.sleep(0.15)
+
             # Detener modelo anterior si existía
             self.stop_current_model()
 
@@ -941,6 +981,7 @@ class ModelManager:
 
             server_bin_dir = os.path.dirname(server_exe) if (server_exe and os.path.exists(server_exe)) else BIN_DIR
             self.last_stderr_lines.clear()
+            client_was_active_at_start = is_client_running()
 
             new_proc = subprocess.Popen(
                 cmd,
@@ -990,6 +1031,14 @@ class ModelManager:
             start_time = time.time()
             ready = False
             while time.time() - start_time < 60:
+                # Si el cliente interactivo se cerró durante la carga, cancelar de inmediato
+                if client_was_active_at_start and not is_client_running():
+                    log_info("Se detectó el cierre de la ventana de OpenCode durante la carga. Cancelando carga de modelo inmediatamente...")
+                    self.finish_loading(success=False, model_name=model_display_name)
+                    self.stop_current_model()
+                    cleanup_orphaned_opencode_services(force_all=True)
+                    return False
+
                 if new_proc.poll() is not None:
                     code = new_proc.poll()
                     err_summary = "\n".join(list(self.last_stderr_lines)[-8:])
@@ -1025,6 +1074,10 @@ class ModelManager:
     def client_monitor_loop(self):
         while True:
             time.sleep(2)
+            running = is_client_running()
+            if not running:
+                cleanup_orphaned_opencode_services(force_all=True)
+
             if not AUTO_UNLOAD_ON_CLIENT_EXIT and not AUTO_QUIT_ON_CLIENT_EXIT:
                 continue
 
@@ -1038,7 +1091,6 @@ class ModelManager:
                 self._client_absent_count = 0
                 continue
 
-            running = is_client_running()
             if running:
                 self.client_seen = True
                 self.last_client_seen_time = time.time()
@@ -1046,9 +1098,9 @@ class ModelManager:
             elif self.client_seen:
                 # OpenCode estuvo activo y ahora no se detecta la ventana/proceso cliente
                 self._client_absent_count = getattr(self, "_client_absent_count", 0) + 1
-                if self._client_absent_count >= 5: # 10 segundos de ausencia confirmada
+                if self._client_absent_count >= 3: # 6 segundos de ausencia confirmada
                     log_info("Se detectó el cierre de la ventana de OpenCode / cliente. Liberando VRAM automáticamente...")
-                    cleanup_orphaned_opencode_services()
+                    cleanup_orphaned_opencode_services(force_all=True)
                     self.stop_current_model()
                     self.client_seen = False
                     self._client_absent_count = 0
@@ -1183,7 +1235,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.3.5</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.6</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1585,6 +1637,54 @@ class RouterHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Interceptar peticiones sintéticas automáticas de OpenCode ("The server restarted...")
+        # para evitar cargar modelos pesados en VRAM sin que el usuario haya escrito nada
+        if body_json and isinstance(body_json, dict):
+            messages = body_json.get("messages", [])
+            is_synthetic_restart = False
+            for m in messages:
+                content = str(m.get("content", ""))
+                if "The server restarted while you were working" in content or "Continuing after restart" in content:
+                    is_synthetic_restart = True
+                    break
+            if is_synthetic_restart:
+                log_info("Petición sintética de reanudación de OpenCode interceptada. Respondiendo sin tocar VRAM.")
+                if body_json.get("stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
+                else:
+                    dummy_resp = {
+                        "id": f"chatcmpl-drain-{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": requested_model or "local-router",
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": ""
+                            },
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "total_tokens": 0
+                        }
+                    }
+                    body = json.dumps(dummy_resp).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
         matched_key = None
         if requested_model:
             matched_key = find_model_key(requested_model)
@@ -1817,7 +1917,8 @@ def run_server():
         time.sleep(0.3)
 
     free_llama_port()
-    cleanup_orphaned_opencode_services()
+    cleanup_orphaned_opencode_services(force_all=True)
+    sanitize_opencode_db()
 
     # Iniciar hilos de monitorización
     idle_thread = threading.Thread(target=manager.idle_checker_loop, daemon=True)
@@ -1871,7 +1972,7 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.3.5 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.6 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")
