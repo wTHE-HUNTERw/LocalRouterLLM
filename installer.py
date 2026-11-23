@@ -121,6 +121,8 @@ def configure_cmd_and_powershell_hooks(base_dir):
             '    )\n'
             '    ping 127.0.0.1 -n 1 -w 500 >nul 2>&1\n'
             ')\n\n'
+            'REM Habilitar codificacion UTF-8 para CMD\n'
+            'chcp 65001 >nul 2>&1\n\n'
             'SET "CLI_EXE=%~dp0node_modules\\@opencode\\cli\\bin\\opencode.exe"\n'
             'IF NOT EXIST "%CLI_EXE%" (\n'
             '    echo [ERROR] No se encontro opencode.exe en %CLI_EXE%\n'
@@ -129,7 +131,8 @@ def configure_cmd_and_powershell_hooks(base_dir):
             '"%CLI_EXE%" %*\n'
             'SET "EXIT_CODE=%ERRORLEVEL%"\n\n'
             'REM Restaurar modo de consola\n'
-            'echo \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h>nul 2>&1\n\n'
+            'for /F %%a in (\'echo prompt $E ^| cmd\') do set "ESC=%%a"\n'
+            'echo %ESC%[?1000l%ESC%[?1002l%ESC%[?1003l%ESC%[?1006l%ESC%[?25h>nul 2>&1\n\n'
             'EXIT /b %EXIT_CODE%\n'
         )
         for target in ["opencode.cmd", "opencode2.cmd"]:
@@ -182,6 +185,8 @@ def configure_cmd_and_powershell_hooks(base_dir):
             'echo * Panel Web:    http://127.0.0.1:8080/\n'
             'echo * Icono activo en la bandeja del sistema (System Tray).\n'
             'echo =======================================================\n'
+            'echo [INFO] Abriendo panel de control en tu navegador...\n'
+            'start http://127.0.0.1:8080/\n'
             'EXIT /b 0\n\n'
             ':do_debug\n'
             'cd /d "%ROUTER_DIR%"\n'

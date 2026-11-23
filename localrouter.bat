@@ -82,5 +82,7 @@ echo * Endpoint API: http://127.0.0.1:8080/v1
 echo * Panel Web:    http://127.0.0.1:8080/
 echo * Icono activo en la bandeja del sistema (System Tray).
 echo =======================================================
+echo [INFO] Abriendo panel de control en tu navegador...
+start http://127.0.0.1:8080/
 ping 127.0.0.1 -n 2 >nul 2>&1
 exit /b 0
