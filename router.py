@@ -347,6 +347,15 @@ def check_router_health(host="127.0.0.1", port=8080):
         pass
     return False
 
+def check_llama_health(host="127.0.0.1", port=LLAMA_PORT):
+    try:
+        url = f"http://{host}:{port}/health"
+        req = urllib.request.Request(url, headers={"User-Agent": "LocalRouterLLM-Check"})
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
 def kill_stale_port_owner(port):
     try:
         my_pid = os.getpid()
@@ -726,8 +735,8 @@ def generate_tray_image(state="idle", is_active=None, loading_angle=0):
 # =========================================================
 class ModelManager:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.transition_lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.transition_lock = threading.RLock()
         self.current_model_key = None
         self.current_process = None
         self.last_activity = time.time()
@@ -741,7 +750,7 @@ class ModelManager:
         self.client_seen = False
         self.last_client_seen_time = time.time()
         self.active_requests = 0
-        self.requests_lock = threading.Lock()
+        self.requests_lock = threading.RLock()
         self.manual_release_time = 0.0
         self.manual_released_model = None
 
@@ -821,25 +830,32 @@ class ModelManager:
             self.last_client_seen_time = time.time()
 
     def stop_current_model(self, manual=False):
-        with self.lock:
-            proc = self.current_process
-            key = self.current_model_key
-            self.current_process = None
-            self.current_model_key = None
-            if manual and key:
-                self.manual_release_time = time.time()
-                self.manual_released_model = key
+        with self.transition_lock:
+            with self.lock:
+                proc = self.current_process
+                key = self.current_model_key
+                self.current_process = None
+                self.current_model_key = None
+                if manual and key:
+                    self.manual_release_time = time.time()
+                    self.manual_released_model = key
 
-        if proc:
-            log_info(f"Deteniendo modelo ({key}) para liberar VRAM...")
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-            except Exception as e:
-                log_warn(f"Error al terminar proceso PID {proc.pid}: {e}")
-            time.sleep(0.4)
-            log_info("VRAM liberada correctamente.")
-        self.update_tray_status()
+            if proc:
+                log_info(f"Deteniendo modelo ({key}) para liberar VRAM...")
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    pass
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                except Exception as e:
+                    log_warn(f"Error al terminar proceso PID {proc.pid}: {e}")
+                free_llama_port()
+                time.sleep(0.4)
+                log_info("VRAM liberada correctamente.")
+            self.update_tray_status()
 
     def ensure_model(self, model_key):
         if model_key and "/" in model_key:
@@ -849,7 +865,8 @@ class ModelManager:
         if model_key == "llama-server-active" or not model_key:
             with self.lock:
                 if self.current_model_key and self.current_process and self.current_process.poll() is None:
-                    return True
+                    if check_llama_health():
+                        return True
             self.last_error = "No hay ningún modelo activo en GPU actualmente."
             return False
         elif matched_key:
@@ -859,19 +876,23 @@ class ModelManager:
             log_warn(self.last_error)
             return False
 
-        # Comprobar primero con lock rápido si ya está activo el modelo correcto
+        # Comprobar primero con lock rápido si ya está activo el modelo correcto y saludable
         with self.lock:
             if self.current_model_key == model_key and self.current_process and self.current_process.poll() is None:
-                self.last_activity = time.time()
-                return True
+                if check_llama_health():
+                    self.last_activity = time.time()
+                    return True
+                else:
+                    log_warn(f"Modelo {model_key} activo pero no responde a /health (posible suspensión del sistema). Reiniciando...")
 
         # Adquirir transition_lock para evitar cambios concurrentes simultáneos
         with self.transition_lock:
             # Re-verificar una vez adquirido el transition_lock por si otro hilo ya lo cargó
             with self.lock:
                 if self.current_model_key == model_key and self.current_process and self.current_process.poll() is None:
-                    self.last_activity = time.time()
-                    return True
+                    if check_llama_health():
+                        self.last_activity = time.time()
+                        return True
                 self.last_activity = time.time()
 
             # Esperar a que peticiones activas en el modelo actual terminen antes de cambiar
@@ -1114,6 +1135,8 @@ class ModelManager:
     def idle_checker_loop(self):
         while True:
             time.sleep(15)
+            should_stop = False
+            mins = 0
             with self.lock:
                 if self.current_process and self.current_process.poll() is None:
                     if self.has_active_requests():
@@ -1122,8 +1145,11 @@ class ModelManager:
                     idle_time = time.time() - self.last_activity
                     if idle_time > IDLE_TIMEOUT_SECONDS:
                         mins = int(idle_time // 60)
-                        log_info(f"Inactividad de {mins} minutos detectada. Auto-descargando modelo...")
-                        self.stop_current_model()
+                        should_stop = True
+
+            if should_stop:
+                log_info(f"Inactividad de {mins} minutos detectada. Auto-descargando modelo...")
+                self.stop_current_model()
 
 manager = ModelManager()
 
@@ -1235,7 +1261,7 @@ def get_dashboard_html():
             <div class="brand">
                 <div class="brand-icon">⚡</div>
                 <div>
-                    <div class="brand-title">LocalRouterLLM v1.3.6</div>
+                    <div class="brand-title">LocalRouterLLM v1.3.7</div>
                     <div class="brand-subtitle">Smart On-Demand Model Router & VRAM Manager para Llama.cpp</div>
                 </div>
             </div>
@@ -1972,7 +1998,7 @@ def run_server():
             tray_icon = None
 
     log_info("=======================================================")
-    log_info(" LocalRouterLLM v1.3.6 - Smart On-Demand Model Router")
+    log_info(" LocalRouterLLM v1.3.7 - Smart On-Demand Model Router")
     log_info(f" Servidor escuchando en: http://{ROUTER_HOST}:{ROUTER_PORT}/v1")
     log_info(f" Panel Web de Control:  http://{ROUTER_HOST}:{ROUTER_PORT}/")
     log_info(f" Tiempo de inactividad para descarga: {IDLE_TIMEOUT_SECONDS // 60} minutos")
