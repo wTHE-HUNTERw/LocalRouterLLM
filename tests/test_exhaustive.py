@@ -1,5 +1,5 @@
 """
-Exhaustive verification suite for LocalRouterLLM v1.3.7.
+Exhaustive verification suite for LocalRouterLLM v1.3.8.
 Tests:
 1. Service startup and /health
 2. Windows Single-Instance Mutex (second instance auto-exits cleanly)
@@ -60,7 +60,7 @@ def wait_for_health(timeout=15):
 
 def run_tests():
     print("=" * 60)
-    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.7")
+    print("STARTING EXHAUSTIVE VERIFICATION SUITE FOR LocalRouterLLM v1.3.8")
     print("=" * 60)
 
     # Clean any lingering processes
