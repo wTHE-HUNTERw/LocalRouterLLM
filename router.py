@@ -1681,7 +1681,29 @@ class RouterHandler(BaseHTTPRequestHandler):
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Connection", "close")
                     self.end_headers()
-                    self.wfile.write(b"data: [DONE]\n\n")
+                    now_ts = int(time.time())
+                    model_id = requested_model or "local-router"
+                    chunk_role = {
+                        "id": f"chatcmpl-drain-{now_ts}",
+                        "object": "chat.completion.chunk",
+                        "created": now_ts,
+                        "model": model_id,
+                        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]
+                    }
+                    chunk_stop = {
+                        "id": f"chatcmpl-drain-{now_ts}",
+                        "object": "chat.completion.chunk",
+                        "created": now_ts,
+                        "model": model_id,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                    }
+                    payload = (
+                        f"data: {json.dumps(chunk_role)}\n\n"
+                        f"data: {json.dumps(chunk_stop)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode("utf-8")
+                    self.wfile.write(payload)
+                    self.wfile.flush()
                     return
                 else:
                     dummy_resp = {
@@ -1816,7 +1838,7 @@ class RouterHandler(BaseHTTPRequestHandler):
         target_url = f"http://127.0.0.1:{LLAMA_PORT}{self.path}"
         headers = {}
         for h, v in self.headers.items():
-            if h.lower() not in ["host", "content-length"]:
+            if h.lower() not in ["host", "content-length", "accept-encoding"]:
                 headers[h] = v
         headers["Host"] = f"127.0.0.1:{LLAMA_PORT}"
 
@@ -1832,21 +1854,30 @@ class RouterHandler(BaseHTTPRequestHandler):
                     self.send_header("Connection", "close")
                     self.end_headers()
 
+                    read_fn = getattr(resp, "read1", resp.read)
                     while True:
-                        chunk = resp.read(2048)
+                        chunk = read_fn(4096)
                         if not chunk:
                             break
                         self.wfile.write(chunk)
                         self.wfile.flush()
                         manager.touch()
             except urllib.error.HTTPError as e:
+                err_body = e.read()
+                log_warn(f"Backend llama-server devolvió HTTP {e.code} en {self.path}: {err_body[:300].decode('utf-8', errors='replace')}")
                 self.send_response(e.code)
+                for h, v in e.headers.items():
+                    if h.lower() not in ["connection", "transfer-encoding", "content-length"]:
+                        self.send_header(h, v)
+                self.send_header("Content-Length", str(len(err_body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(e.read())
+                self.wfile.write(err_body)
             except Exception as e:
                 # Si no hay modelo activo aún o llama-server no responde
                 active = manager.get_active_model()
                 msg = str(e)
+                log_warn(f"Error en proxy_request hacia {target_url}: {msg}")
                 if not active:
                     msg = "Ningún modelo cargado en GPU en este momento. Envía una consulta a /v1/chat/completions para cargar uno automáticamente."
                 err = json.dumps({"error": {"message": msg, "target": target_url}}).encode("utf-8")
